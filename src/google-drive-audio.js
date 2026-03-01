@@ -1,0 +1,55 @@
+// Minimal wrapper around Google Drive API to expose audio file URLs from a folder
+
+export class GoogleDriveAudioProvider {
+  /**
+   * @param {Object} opts
+   * @param {string} opts.folderId - the ID of the Drive folder containing audio
+   * @param {string} [opts.apiKey] - API key (optional if using accessToken)
+   * @param {string} [opts.accessToken] - OAuth Bearer token for private folders
+   */
+  constructor({ folderId, apiKey = null, accessToken = null } = {}) {
+    if (!folderId) throw new Error('folderId is required');
+    this.folderId = folderId;
+    this.apiKey = apiKey;
+    this.accessToken = accessToken;
+  }
+
+  _fetch(url) {
+    const headers = {};
+    if (this.accessToken) {
+      headers['Authorization'] = `Bearer ${this.accessToken}`;
+    }
+    return fetch(url, { headers }).then((r) => {
+      if (!r.ok) throw new Error(`Drive API error ${r.status}`);
+      return r.json();
+    });
+  }
+
+  /**
+   * List audio files in the folder.
+   * Returns an array of objects { id, name, mimeType }
+   */
+  async listFiles() {
+    const q = `'${this.folderId}'+in+parents+and+(mimeType contains 'audio/')`;
+    const params = new URLSearchParams({
+      q,
+      fields: 'files(id,name,mimeType)',
+    });
+    if (this.apiKey) params.append('key', this.apiKey);
+    const url = `https://www.googleapis.com/drive/v3/files?${params.toString()}`;
+    const data = await this._fetch(url);
+    return data.files || [];
+  }
+
+  /**
+   * Get a download URL for a given file ID.
+   * Note: you can append &key=<apiKey> if using API key.
+   */
+  getDownloadUrl(fileId) {
+    let url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+    if (this.apiKey) url += `&key=${this.apiKey}`;
+    return url;
+  }
+}
+
+export default GoogleDriveAudioProvider;

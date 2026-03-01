@@ -58,6 +58,7 @@ vi.mock('/node_modules/three/build/three.module.js', async (importOriginal) => {
 });
 
 import * as THREE from '/node_modules/three/build/three.module.js';
+import { setFlag } from './feature-flags.js';
 import {
   detectMobile,
   createCamera,
@@ -71,6 +72,7 @@ import {
   handleResize,
   animateLoop,
   initScene,
+  applySpectrumToParams,
 } from './three-scene.js';
 
 // helper to make a fake container with dimensions
@@ -198,6 +200,50 @@ describe('three-scene helpers', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+
+  it('initScene respects feature flags by hiding UI', () => {
+    // disable features
+    setFlag('ENABLE_GUI', false);
+    setFlag('ENABLE_UPLOAD', false);
+    const c = makeContainer();
+    c.id = 'three-container';
+    initScene();
+    expect(document.querySelector('.lil-gui')).toBeNull();
+    expect(c.querySelector('input[type=file]')).toBeNull();
+    // reset flags
+    setFlag('ENABLE_GUI', true);
+    setFlag('ENABLE_UPLOAD', true);
+  });
+
+  it('applySpectrumToParams updates parameters correctly', () => {
+    const planetParams = { radius: 1 };
+    const radiusCtrl = { setValue: vi.fn() };
+    const bloomPass = { strength: 0, threshold: 0 };
+    const material = { reflectivity: 0 };
+    const sphere = { scale: { setScalar: vi.fn() } };
+    const baseRadius = 1;
+    // create a fake spectrum: low=1, mid=0.5, high=0
+    const spectrum = new Float32Array([1, 1, 1, 0.5, 0.5, 0, 0]);
+    applySpectrumToParams(spectrum, {
+      planetParams,
+      radiusCtrl,
+      bloomPass,
+      material,
+      sphere,
+      baseRadius,
+    });
+    // lowAvg = 1 (first two elements)
+    expect(planetParams.radius).toBeCloseTo(2.2);
+    expect(radiusCtrl.setValue).toHaveBeenCalledWith(2.2);
+    expect(sphere.scale.setScalar).toHaveBeenCalledWith(2.2 / baseRadius);
+    // midAvg computed from elements 2 & 3 => (1 + 0.5)/2 = 0.75
+    expect(bloomPass.strength).toBeCloseTo(0.75 * 3);
+    // highAvg computed from remaining items => (0.5+0+0)/3 = 0.1666...
+    expect(bloomPass.threshold).toBeCloseTo((0.5 + 0 + 0) / 3);
+    // material.reflectivity = 0.2 + highAvg*0.8
+    expect(material.reflectivity).toBeCloseTo(0.2 + ((0.5 + 0 + 0) / 3) * 0.8);
   });
 
 });

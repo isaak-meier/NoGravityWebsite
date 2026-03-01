@@ -6,13 +6,22 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>No Gravity</title>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "/node_modules/three/build/three.module.js"
+    }
+  }
+  </script>
   <link rel="stylesheet" href="src/styles.css">
+  <!-- Google APIs for Drive and Picker -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://apis.google.com/js/picker-and-drive-sdk"></script>
 </head>
 
 <body>
-  <h1 style="text-align:center;margin-top:1rem;">Hi</h1>
-  <div id="three-container" style="width:800px;height:600px;margin:20px auto;background:transparent"></div>
-  <script src="src/script.js"></script>
+  <h1 style="text-align:center;margin-top:1rem;">NXGRXVITY</h1>
+  <div id="three-container"></div>
   <script type="module" src="src/three-scene.js"></script>
 </body>
 

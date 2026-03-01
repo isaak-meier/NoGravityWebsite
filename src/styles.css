@@ -6,3 +6,29 @@
   --text:#e6eef8;
 }
 
+/* Reset page spacing and make the three container fill the viewport */
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+#three-container {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  z-index: 0;
+  touch-action: none;
+}
+
+/* Keep page title above the 3D canvas */
+h1 {
+  position: relative;
+  z-index: 2;
+  margin: 1rem auto 0;
+}
+
