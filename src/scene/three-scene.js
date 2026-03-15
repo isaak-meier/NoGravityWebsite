@@ -5,16 +5,17 @@ import { RenderPass } from "/node_modules/three/examples/jsm/postprocessing/Rend
 import { UnrealBloomPass } from "/node_modules/three/examples/jsm/postprocessing/UnrealBloomPass.js";
 // GUI library for runtime tweaking
 import GUI from "/node_modules/lil-gui/dist/lil-gui.esm.min.js";
-import AudioFFT from "./audio-fft.js";
-import { isEnabled } from "./feature-flags.js";
-import appConfig from "./app-config.js";
+import AudioFFT from "../audio/audio-fft.js";
+import { isEnabled } from "../config/feature-flags.js";
+import appConfig from "../config/app-config.js";
 import {
   initializeGoogleAuth,
   requestGoogleAuth,
   showGoogleDrivePicker,
   getAccessToken,
-} from "./google-auth.js";
-import GoogleDriveAudioProvider from "./google-drive-audio.js";
+} from "../google/google-auth.js";
+import GoogleDriveAudioProvider from "../google/google-drive-audio.js";
+import PyramidField from "../pyramid/pyramid-field.js";
 
 async function cleanupDevServiceWorkers() {
   if (typeof window === "undefined") return;
@@ -297,7 +298,7 @@ function handleResize(container, camera, renderer, composer) {
   composer.setSize(w, h);
 }
 
-function animateLoop(scene, camera, composer, sphere, starField, state) {
+function animateLoop(scene, camera, composer, sphere, starField, state, world) {
   const clock = new THREE.Clock();
   (function tick() {
     requestAnimationFrame(tick);
@@ -305,6 +306,7 @@ function animateLoop(scene, camera, composer, sphere, starField, state) {
     sphere.rotation.y += t * 0.2;
     sphere.rotation.x += t * 0.08;
     starField.rotation.y += t * 0.002;
+    if (world && world.pyramidField) world.pyramidField.update(t);
     state.targetCam.x = state.mouseX * 0.8;
     state.targetCam.y = -state.mouseY * 0.6;
     camera.position.x += (state.targetCam.x - camera.position.x) * 0.06;
@@ -315,36 +317,176 @@ function animateLoop(scene, camera, composer, sphere, starField, state) {
   })();
 }
 
+// --- Audio state management ------------------------------------------------
+
+function createAudioState() {
+  return { stream: null, fft: null, audioEl: null };
+}
+
+function stopAudio(audioState) {
+  if (audioState.stream) {
+    audioState.stream.stop();
+    audioState.stream = null;
+  }
+  if (audioState.audioEl) {
+    try { audioState.audioEl.pause(); } catch (_) {}
+    audioState.audioEl = null;
+  }
+}
+
+async function toggleAudioPlayback(audioState) {
+  if (!audioState.audioEl) return false;
+  if (audioState.audioEl.paused) {
+    if (audioState.fft && audioState.fft.context && audioState.fft.context.state === "suspended") {
+      await audioState.fft.context.resume();
+    }
+    await audioState.audioEl.play();
+    if (audioState.stream) audioState.stream.start();
+    return true;
+  }
+  audioState.audioEl.pause();
+  if (audioState.stream) audioState.stream.stop();
+  return false;
+}
+
+// --- Audio element + FFT wiring -------------------------------------------
+
+function createAudioElement(src) {
+  const el = document.createElement("audio");
+  el.src = src;
+  el.crossOrigin = "anonymous";
+  el.controls = false;
+  el.preload = "auto";
+  return el;
+}
+
+async function loadAudioSource(source, audioState, onSpectrum, onNewSource) {
+  stopAudio(audioState);
+  const url = source instanceof Blob ? URL.createObjectURL(source) : source;
+  audioState.audioEl = createAudioElement(url);
+  const fft = new AudioFFT({ audioElement: audioState.audioEl, context: null });
+  try { await fft.load(); } catch (err) { console.warn("AudioFFT.load() failed:", err); }
+  audioState.fft = fft;
+  if (onNewSource) onNewSource();
+  const stream = fft.createStream();
+  stream.onData(onSpectrum);
+  audioState.stream = stream;
+}
+
+// --- Planet click-to-play/pause -------------------------------------------
+
+function setupPlanetClickHandler(renderer, camera, sphere, audioState) {
+  const raycaster = new THREE.Raycaster();
+  const pointer = new THREE.Vector2();
+  renderer.domElement.addEventListener("click", async (e) => {
+    const rect = renderer.domElement.getBoundingClientRect();
+    pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    if (raycaster.intersectObject(sphere).length === 0) return;
+    try { await toggleAudioPlayback(audioState); } catch (err) { console.warn("Audio toggle failed:", err); }
+  });
+}
+
+// --- Song picker DOM ------------------------------------------------------
+
+function createSongPickerDOM() {
+  const wrapper = document.createElement("div");
+  wrapper.style.cssText =
+    "position:absolute;bottom:12px;left:12px;z-index:20;" +
+    "background:rgba(0,0,0,0.4);padding:8px;border-radius:6px;color:#e6eef8;font-size:12px;";
+  const folderLabel = document.createElement("span");
+  folderLabel.style.cssText = "opacity:0.9;";
+  folderLabel.textContent = "Folder: none";
+  const driveFilesList = document.createElement("select");
+  driveFilesList.style.cssText = "margin-left:8px;display:none;";
+  driveFilesList.appendChild(new Option("Select an audio file...", ""));
+  wrapper.appendChild(folderLabel);
+  wrapper.appendChild(driveFilesList);
+  return { wrapper, folderLabel, driveFilesList };
+}
+
+// --- Google Drive song picker ---------------------------------------------
+
+function setupSongPicker(container, audioState, onSpectrum, onNewSource) {
+  initializeGoogleAuth();
+  const dom = createSongPickerDOM();
+  container.appendChild(dom.wrapper);
+  const driveState = { provider: null };
+
+  async function loadDriveFile(fileId) {
+    if (!fileId || !driveState.provider) return;
+    const blob = await driveState.provider.fetchFileBlob(fileId);
+    await loadAudioSource(blob, audioState, onSpectrum, onNewSource);
+    try {
+      // Resume AudioContext (browsers suspend it until user gesture)
+      if (audioState.fft && audioState.fft.context && audioState.fft.context.state === "suspended") {
+        await audioState.fft.context.resume();
+      }
+      await audioState.audioEl.play();
+      if (audioState.stream) audioState.stream.start();
+    } catch (err) { console.warn("Auto-play failed:", err); }
+  }
+
+  dom.driveFilesList.addEventListener("change", async (e) => {
+    if (!e.target.value || !driveState.provider) return;
+    try { await loadDriveFile(e.target.value); } catch (err) { console.error("Error loading audio:", err); }
+  });
+
+  async function connectDrive(provider, folderNameHint, autoSelectFirst) {
+    driveState.provider = provider;
+    dom.folderLabel.textContent = `Folder: ${folderNameHint}`;
+    try {
+      const folder = await provider.getFolder();
+      if (folder && folder.name) dom.folderLabel.textContent = `Folder: ${folder.name}`;
+    } catch (err) { console.warn("Unable to fetch folder name:", err); }
+    const files = await provider.listAllFiles();
+    if (files.length === 0) { dom.folderLabel.textContent += " (empty)"; return; }
+    dom.driveFilesList.innerHTML = '<option value="">Select an audio file...</option>';
+    files.forEach((f) => dom.driveFilesList.appendChild(new Option(f.name, f.id)));
+    dom.driveFilesList.style.display = "inline-block";
+    if (autoSelectFirst) {
+      dom.driveFilesList.value = files[0].id;
+      await loadDriveFile(files[0].id);
+    }
+  }
+
+  const presetFolderId = appConfig.googleDrive.folderId ||
+    (typeof window !== "undefined" ? window.__GOOGLE_DRIVE_FOLDER_ID__ : null);
+  const presetApiKey = appConfig.googleDrive.apiKey ||
+    (typeof window !== "undefined" ? window.__GOOGLE_API_KEY__ : null);
+  if (presetFolderId) {
+    const provider = new GoogleDriveAudioProvider({ folderId: presetFolderId, apiKey: presetApiKey || null });
+    connectDrive(provider, "Configured folder", true).catch((err) => {
+      console.error("Configured Google Drive folder failed:", err);
+      dom.folderLabel.textContent = "Folder: unavailable";
+    });
+  }
+}
+
+// --- Scene initialization -------------------------------------------------
+
 function initScene() {
   cleanupDevServiceWorkers();
-
   const container = document.getElementById("three-container");
-  if (!container) {
-    console.warn("No #three-container found");
-    return;
-  }
+  if (!container) { console.warn("No #three-container found"); return; }
+
   const scene = new THREE.Scene();
-  // start slightly further back for a more zoomed-out view
   const camera = createCamera(container);
   camera.position.z = 7;
   const isMobile = detectMobile();
   const renderer = createRenderer(container);
-  const { composer, bloomPass } = setupPostProcessing(
-    renderer,
-    scene,
-    camera,
-    container
-  );
+  const { composer, bloomPass } = setupPostProcessing(renderer, scene, camera, container);
   const { sphere, material } = createSphere(isMobile);
   scene.add(sphere);
   const starField = createStars(isMobile);
   scene.add(starField);
   setupLights(scene);
+
   let gui, effects;
   if (isEnabled("ENABLE_GUI")) {
     ({ gui, effects } = setupGUI(material, bloomPass, starField));
   }
-  // add a radius controller (scales the sphere) inside the effects folder
   const baseRadius = 0.9;
   const planetParams = { radius: baseRadius };
   let radiusCtrl = null;
@@ -353,268 +495,65 @@ function initScene() {
     radiusCtrl.onChange((v) => sphere.scale.setScalar(v / baseRadius));
   }
 
-  if (isEnabled("ENABLE_UPLOAD")) {
-    // Initialize Google Auth on page load
-    initializeGoogleAuth();
+  // Pyramids are deferred until a valid audio source loads.
+  // We collect 5 FFT snapshots spaced across early playback to use as keyframes.
+  const world = { pyramidField: null };
+  const SNAPSHOT_COUNT = 5;
+  const SNAPSHOT_INTERVAL = 8; // take a snapshot every N non-zero frames
+  let snapshotState = null; // { snapshots: [], frameCount: 0 }
 
-    // audio controls: file input + play/sync + google drive
-    const audioControls = document.createElement("div");
-    audioControls.style.cssText = "position: absolute; bottom: 12px; left: 12px; z-index:20; background: rgba(0,0,0,0.4); padding:8px; border-radius:6px; color:#e6eef8; font-size:12px;";
-    const fileIn = document.createElement("input");
-    fileIn.type = "file";
-    fileIn.accept = "audio/*";
-    const playBtn = document.createElement("button");
-    playBtn.textContent = "Play";
-    playBtn.style.marginLeft = "8px";
-    const pickerBtn = document.createElement("button");
-    pickerBtn.textContent = "Open Picker";
-    pickerBtn.style.marginLeft = "8px";
-    const folderLabel = document.createElement("span");
-    folderLabel.style.cssText = "margin-left: 8px; opacity: 0.9;";
-    folderLabel.textContent = "Folder: none";
-    
-    // Dropdown to select audio files from Google Drive
-    const driveFilesList = document.createElement("select");
-    driveFilesList.style.cssText = "margin-left: 8px; display: none;";
-    driveFilesList.appendChild(new Option("Select an audio file...", ""));
-    
-    audioControls.appendChild(fileIn);
-    audioControls.appendChild(playBtn);
-    audioControls.appendChild(pickerBtn);
-    audioControls.appendChild(folderLabel);
-    audioControls.appendChild(driveFilesList);
-    container.appendChild(audioControls);
-
-    let currentStream = null;
-    let currentFFT = null;
-    let currentAudioEl = null;
-    let currentDriveProvider = null;
-    const presetFolderId =
-      appConfig.googleDrive.folderId ||
-      (typeof window !== "undefined"
-        ? window.__GOOGLE_DRIVE_FOLDER_ID__
-        : null);
-    const presetApiKey =
-      appConfig.googleDrive.apiKey ||
-      (typeof window !== "undefined" ? window.__GOOGLE_API_KEY__ : null);
-
-    function stopCurrentAudio() {
-      if (currentStream) {
-        currentStream.stop();
-        currentStream = null;
-      }
-      if (currentAudioEl) {
-        try {
-          currentAudioEl.pause();
-        } catch (err) {}
-        currentAudioEl = null;
-      }
+  function ensurePyramids() {
+    if (!world.pyramidField) {
+      world.pyramidField = new PyramidField();
+      scene.add(world.pyramidField.group);
+      if (gui) world.pyramidField.setupGUI(gui);
     }
-
-    async function loadDriveFileById(fileId) {
-      if (!fileId || !currentDriveProvider) return;
-
-      stopCurrentAudio();
-
-      // Fetch audio as blob with proper auth headers so private Drive files work
-      const blob = await currentDriveProvider.fetchFileBlob(fileId);
-      const blobUrl = URL.createObjectURL(blob);
-      const audioEl = document.createElement("audio");
-      audioEl.src = blobUrl;
-      audioEl.crossOrigin = "anonymous";
-      audioEl.controls = false;
-      audioEl.preload = "auto";
-      currentAudioEl = audioEl;
-
-      currentFFT = new AudioFFT({ audioElement: audioEl, context: null });
-      try {
-        await currentFFT.load();
-      } catch (err) {
-        console.warn("AudioFFT.load() failed:", err);
-      }
-
-      const stream = currentFFT.createStream();
-      stream.onData((spectrum) => {
-        applySpectrumToParams(spectrum, {
-          planetParams,
-          radiusCtrl,
-          bloomPass,
-          material,
-          sphere,
-          baseRadius,
-        });
-      });
-      currentStream = stream;
-
-      try {
-        await audioEl.play();
-        if (currentStream) currentStream.start();
-      } catch (err) {
-        console.warn("Auto-play failed:", err);
-      }
-    }
-
-    async function connectDriveProvider(provider, {
-      folderNameHint = "Unnamed folder",
-      autoSelectFirst = false,
-    } = {}) {
-      currentDriveProvider = provider;
-      folderLabel.textContent = `Folder: ${folderNameHint}`;
-
-      try {
-        const folder = await currentDriveProvider.getFolder();
-        if (folder && folder.name) {
-          folderLabel.textContent = `Folder: ${folder.name}`;
-        }
-      } catch (err) {
-        console.warn("Unable to fetch folder name from Drive API:", err);
-      }
-
-      const files = await currentDriveProvider.listFiles();
-      if (files.length === 0) {
-        alert("No audio files found in the selected folder");
-        return;
-      }
-
-      driveFilesList.innerHTML = '<option value="">Select an audio file...</option>';
-      files.forEach((file) => {
-        const option = new Option(file.name, file.id);
-        driveFilesList.appendChild(option);
-      });
-      driveFilesList.style.display = "inline-block";
-
-      if (autoSelectFirst) {
-        driveFilesList.value = files[0].id;
-        await loadDriveFileById(files[0].id);
-      }
-    }
-
-    // Google Drive Picker button handler
-    pickerBtn.addEventListener("click", async () => {
-      try {
-        // Step 1: Request Google auth
-        const token = await requestGoogleAuth();
-        if (!token) {
-          console.warn("Failed to get Google auth token");
-          return;
-        }
-
-        // Step 2: Show folder picker
-        const selectedFolder = await showGoogleDrivePicker();
-        if (!selectedFolder || !selectedFolder.id) {
-          console.log("User cancelled folder selection");
-          return;
-        }
-
-        const folderId = selectedFolder.id;
-        const pickerFolderName = selectedFolder.name || "Unnamed folder";
-        const provider = new GoogleDriveAudioProvider({
-          folderId,
-          accessToken: token,
-        });
-
-        await connectDriveProvider(provider, {
-          folderNameHint: pickerFolderName,
-          autoSelectFirst: false,
-        });
-      } catch (err) {
-        console.error("Google Drive error:", err);
-        alert("Error accessing Google Drive: " + err.message);
-      }
-    });
-
-    // Handle selection from Google Drive dropdown
-    driveFilesList.addEventListener("change", async (e) => {
-      const fileId = e.target.value;
-      if (!fileId || !currentDriveProvider) return;
-
-      try {
-        await loadDriveFileById(fileId);
-      } catch (err) {
-        console.error("Error loading audio from Drive:", err);
-        alert("Error loading audio: " + err.message);
-      }
-    });
-
-    if (presetFolderId) {
-      pickerBtn.textContent = "Change Folder";
-      const provider = new GoogleDriveAudioProvider({
-        folderId: presetFolderId,
-        apiKey: presetApiKey || null,
-      });
-
-      connectDriveProvider(provider, {
-        folderNameHint: "Configured folder",
-        autoSelectFirst: true,
-      }).catch((err) => {
-        console.error("Configured Google Drive folder failed:", err);
-        folderLabel.textContent = "Folder: unavailable";
-      });
-    }
-
-    fileIn.addEventListener("change", async (e) => {
-    const f = e.target.files && e.target.files[0];
-    if (!f) return;
-    stopCurrentAudio();
-    const url = URL.createObjectURL(f);
-    const audioEl = document.createElement("audio");
-    audioEl.src = url;
-    audioEl.crossOrigin = "anonymous";
-    audioEl.controls = false;
-    audioEl.preload = "auto";
-    currentAudioEl = audioEl;
-    // instantiate helper
-    currentFFT = new AudioFFT({ audioElement: audioEl, context: null });
-    // prefer reuse of existing AudioContext if AudioFFT created one internally; load() will create analyser
-    try {
-      await currentFFT.load();
-    } catch (err) {
-      console.warn("AudioFFT.load() failed:", err);
-    }
-    const stream = currentFFT.createStream();
-    stream.onData((spectrum) => {
-      applySpectrumToParams(spectrum, {
-        planetParams,
-        radiusCtrl,
-        bloomPass,
-        material,
-        sphere,
-        baseRadius,
-      });
-    });
-    currentStream = stream;
-  });
-
-  playBtn.addEventListener("click", async () => {
-    if (!currentAudioEl) return;
-    try {
-      await currentAudioEl.play();
-    } catch (err) {
-      try {
-        // try resuming context and play again
-        if (currentFFT && currentFFT.context && currentFFT.context.state === "suspended") await currentFFT.context.resume();
-        await currentAudioEl.play();
-      } catch (e) {
-        console.warn("Audio play failed:", e);
-      }
-    }
-    if (currentStream) currentStream.start();
-  });
   }
+
+  const audioState = createAudioState();
+  const onSpectrum = (spectrum) => {
+    // Collect snapshots for pyramid keyframes
+    if (snapshotState && snapshotState.snapshots.length < SNAPSHOT_COUNT) {
+      if (spectrum.some((v) => v > 0)) {
+        snapshotState.frameCount++;
+        // Capture the very first non-zero frame as snapshot 0 AND apply it
+        // immediately so there's no jump when setKeyframes later applies kf 0.
+        if (snapshotState.frameCount === 1) {
+          ensurePyramids();
+          world.pyramidField.applySpectrum(spectrum);
+          snapshotState.snapshots.push(new Float32Array(spectrum));
+        } else if (snapshotState.frameCount % SNAPSHOT_INTERVAL === 0) {
+          ensurePyramids();
+          snapshotState.snapshots.push(new Float32Array(spectrum));
+          if (snapshotState.snapshots.length === SNAPSHOT_COUNT) {
+            const duration = audioState.audioEl ? audioState.audioEl.duration : 0;
+            world.pyramidField.setKeyframes(snapshotState.snapshots, duration);
+          }
+        }
+      }
+    }
+    applySpectrumToParams(spectrum, {
+      planetParams, radiusCtrl, bloomPass, material, sphere, baseRadius,
+    });
+  };
+
+  setupPlanetClickHandler(renderer, camera, sphere, audioState);
+  setupSongPicker(container, audioState, onSpectrum, () => {
+    snapshotState = { snapshots: [], frameCount: 0 };
+  });
+
   const state = setupInteractions(container, camera);
-  window.addEventListener("resize", () =>
-    handleResize(container, camera, renderer, composer)
-  );
-  animateLoop(scene, camera, composer, sphere, starField, state);
+  window.addEventListener("resize", () => handleResize(container, camera, renderer, composer));
+  animateLoop(scene, camera, composer, sphere, starField, state, world);
 }
 
-// helper used to map FFT data into scene parameters
+// --- Spectrum → scene parameter mapping -----------------------------------
+
 function applySpectrumToParams(
   spectrum,
   { planetParams, radiusCtrl, bloomPass, material, sphere, baseRadius }
 ) {
   const len = spectrum.length;
-  // divide into low/mid/high thirds
   const third = Math.floor(len / 3);
   const low = spectrum.slice(0, third);
   const mid = spectrum.slice(third, third * 2);
@@ -625,20 +564,17 @@ function applySpectrumToParams(
   const midAvg = avg(mid);
   const highAvg = avg(high);
 
-  // radius: base + lowAvg*1.2
-  const newRadius = baseRadius + lowAvg * 1.2;
+  const newRadius = baseRadius + lowAvg * 0.65;
   planetParams.radius = newRadius;
-  if (radiusCtrl) {
-    radiusCtrl.setValue(newRadius);
-  }
-  sphere.scale.setScalar(newRadius / baseRadius);
+  if (radiusCtrl) radiusCtrl.setValue(newRadius);
+  // Smooth lerp toward target scale instead of jumping
+  const target = newRadius / baseRadius;
+  const current = sphere.scale.x;
+  const smoothed = current + (target - current) * 0.08;
+  sphere.scale.setScalar(smoothed);
 
-  // bloom strength: map midAvg to [0,3]
   bloomPass.strength = midAvg * 3;
-  // threshold: map highAvg to [0,1]
   bloomPass.threshold = highAvg;
-
-  // material reflectivity or clearcoat based on high freq
   material.reflectivity = 0.2 + highAvg * 0.8;
 }
 
@@ -659,4 +595,12 @@ export {
   animateLoop,
   initScene,
   applySpectrumToParams,
+  createAudioState,
+  stopAudio,
+  toggleAudioPlayback,
+  createAudioElement,
+  loadAudioSource,
+  setupPlanetClickHandler,
+  createSongPickerDOM,
+  setupSongPicker,
 };

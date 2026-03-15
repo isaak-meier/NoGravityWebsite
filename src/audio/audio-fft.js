@@ -123,6 +123,18 @@ export class AudioFFT {
   }
 
   /**
+   * Return a single normalized FFT frame (Float32Array 0..1) from the analyser.
+   */
+  getSnapshot() {
+    if (!this.analyser) throw new Error('AudioFFT: analyser not initialized. Call load() first.');
+    const data = new Uint8Array(this.analyser.frequencyBinCount);
+    this.analyser.getByteFrequencyData(data);
+    const out = new Float32Array(data.length);
+    for (let i = 0; i < data.length; i++) out[i] = data[i] / 255;
+    return out;
+  }
+
+  /**
    * If you want to play the loaded audio element via this helper.
    */
   async play() {

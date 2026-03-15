@@ -30,7 +30,24 @@ export class GoogleDriveAudioProvider {
    * Returns an array of objects { id, name, mimeType }
    */
   async listFiles() {
-    const q = `'${this.folderId}'+in+parents+and+(mimeType contains 'audio/')`;
+    const q = `'${this.folderId}' in parents and trashed = false and (mimeType contains 'audio/')`;
+    const params = new URLSearchParams({
+      q,
+      fields: 'files(id,name,mimeType)',
+      orderBy: 'name_natural',
+    });
+    if (this.apiKey) params.append('key', this.apiKey);
+    const url = `https://www.googleapis.com/drive/v3/files?${params.toString()}`;
+    const data = await this._fetch(url);
+    return data.files || [];
+  }
+
+  /**
+   * List ALL files in the folder (no MIME filter), useful for debugging.
+   * Returns an array of objects { id, name, mimeType }
+   */
+  async listAllFiles() {
+    const q = `'${this.folderId}' in parents and trashed = false`;
     const params = new URLSearchParams({
       q,
       fields: 'files(id,name,mimeType)',
@@ -67,8 +84,6 @@ export class GoogleDriveAudioProvider {
 
   /**
    * Fetch a file's content as a Blob with proper auth headers.
-   * This is needed because <audio> elements can't send Authorization headers,
-   * so we fetch the binary data and create a blob URL instead.
    * @param {string} fileId
    * @returns {Promise<Blob>}
    */
