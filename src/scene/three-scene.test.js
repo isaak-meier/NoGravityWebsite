@@ -69,6 +69,9 @@ import {
   setupLights,
   setupGUI,
   setupInteractions,
+  setupPlanetFollowHandler,
+  PLANET_DEFS,
+  createPlanet,
   handleResize,
   animateLoop,
   initScene,
@@ -141,12 +144,12 @@ describe('three-scene helpers', () => {
       expect(cam.fov).toBe(45);
     });
 
-    it('positions camera at (0, 0, 5)', () => {
+    it('positions camera at (0, 80, 300)', () => {
       const c = makeContainer();
       const cam = createCamera(c);
       expect(cam.position.x).toBe(0);
-      expect(cam.position.y).toBe(0);
-      expect(cam.position.z).toBe(5);
+      expect(cam.position.y).toBe(80);
+      expect(cam.position.z).toBe(300);
     });
 
     it('handles unusual aspect ratios (very wide)', () => {
@@ -275,16 +278,16 @@ describe('three-scene helpers', () => {
       expect(attr.count).toBeGreaterThan(0);
     });
 
-    it('desktop uses 1500 stars', () => {
+    it('desktop uses 3000 stars', () => {
       const pts = createStars(false);
       const attr = pts.geometry.getAttribute('position');
-      expect(attr.count).toBe(1500);
+      expect(attr.count).toBe(3000);
     });
 
-    it('mobile uses 600 stars for performance', () => {
+    it('mobile uses 1200 stars for performance', () => {
       const pts = createStars(true);
       const attr = pts.geometry.getAttribute('position');
-      expect(attr.count).toBe(600);
+      expect(attr.count).toBe(1200);
     });
 
     it('star material has white color', () => {
@@ -297,7 +300,7 @@ describe('three-scene helpers', () => {
       expect(pts.material.transparent).toBe(true);
     });
 
-    it('all star positions are at distance >= 30 from origin', () => {
+    it('all star positions are at distance >= 200 from origin', () => {
       const pts = createStars(false);
       const positions = pts.geometry.getAttribute('position');
       for (let i = 0; i < positions.count; i++) {
@@ -305,8 +308,7 @@ describe('three-scene helpers', () => {
         const y = positions.getY(i);
         const z = positions.getZ(i);
         const dist = Math.sqrt(x * x + y * y + z * z);
-        // stars should be at radius 30-100
-        expect(dist).toBeGreaterThanOrEqual(29.9);
+        expect(dist).toBeGreaterThanOrEqual(199);
       }
     });
   });
@@ -317,14 +319,14 @@ describe('three-scene helpers', () => {
     it('adds multiple light sources to the scene', () => {
       const scene = new THREE.Scene();
       setupLights(scene);
-      expect(scene.children.length).toBeGreaterThanOrEqual(4);
+      expect(scene.children.length).toBeGreaterThanOrEqual(3);
     });
 
-    it('includes a directional light', () => {
+    it('includes a point light (sun light)', () => {
       const scene = new THREE.Scene();
       setupLights(scene);
-      const dirLight = scene.children.find((c) => c instanceof THREE.DirectionalLight);
-      expect(dirLight).toBeDefined();
+      const ptLight = scene.children.find((c) => c instanceof THREE.PointLight);
+      expect(ptLight).toBeDefined();
     });
 
     it('includes an ambient light', () => {
@@ -339,22 +341,6 @@ describe('three-scene helpers', () => {
       setupLights(scene);
       const hemiLight = scene.children.find((c) => c instanceof THREE.HemisphereLight);
       expect(hemiLight).toBeDefined();
-    });
-
-    it('includes a point (fill) light', () => {
-      const scene = new THREE.Scene();
-      setupLights(scene);
-      const ptLight = scene.children.find((c) => c instanceof THREE.PointLight);
-      expect(ptLight).toBeDefined();
-    });
-
-    it('includes a light indicator sphere mesh', () => {
-      const scene = new THREE.Scene();
-      setupLights(scene);
-      const indicator = scene.children.find(
-        (c) => c instanceof THREE.Mesh && c.material instanceof THREE.MeshBasicMaterial
-      );
-      expect(indicator).toBeDefined();
     });
   });
 
@@ -401,47 +387,36 @@ describe('three-scene helpers', () => {
       expect(state.mouseY).toBe(0);
     });
 
-    it('responds to mousemove events', () => {
+    it('responds to mousemove for camera look direction', () => {
       const c = makeContainer();
       const cam = createCamera(c);
       const state = setupInteractions(c, cam);
-      const move = new MouseEvent('mousemove', { clientX: 10, clientY: 10 });
-      window.dispatchEvent(move);
+      expect(state.mouseX).toBe(0);
+      // Simulate mousemove over container
+      c.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 600 });
+      c.dispatchEvent(new MouseEvent('mousemove', { clientX: 600, clientY: 300 }));
       expect(state.mouseX).not.toBe(0);
     });
 
-    it('responds to wheel events by changing targetZ', () => {
+    it('responds to wheel events by moving camera', () => {
       const c = makeContainer();
       const cam = createCamera(c);
       const state = setupInteractions(c, cam);
-      const initialZ = state.targetZ;
+      const initialZ = cam.position.z;
       const w = new WheelEvent('wheel', { deltaY: 100 });
       window.dispatchEvent(w);
-      expect(state.targetZ).not.toBe(initialZ);
+      expect(cam.position.z).not.toBe(initialZ);
     });
 
-    it('clamps targetZ between min and max on scroll up', () => {
+    it('responds to WASD key events', () => {
       const c = makeContainer();
       const cam = createCamera(c);
       const state = setupInteractions(c, cam);
-      // scroll a LOT inward
-      for (let i = 0; i < 100; i++) {
-        window.dispatchEvent(new WheelEvent('wheel', { deltaY: -200 }));
-      }
-      // should not go below 2.0
-      expect(state.targetZ).toBeGreaterThanOrEqual(2.0);
-    });
-
-    it('clamps targetZ between min and max on scroll down', () => {
-      const c = makeContainer();
-      const cam = createCamera(c);
-      const state = setupInteractions(c, cam);
-      // scroll a LOT outward
-      for (let i = 0; i < 100; i++) {
-        window.dispatchEvent(new WheelEvent('wheel', { deltaY: 200 }));
-      }
-      // should not go above 25.0
-      expect(state.targetZ).toBeLessThanOrEqual(25.0);
+      expect(state.keys.w).toBe(false);
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w' }));
+      expect(state.keys.w).toBe(true);
+      window.dispatchEvent(new KeyboardEvent('keyup', { key: 'w' }));
+      expect(state.keys.w).toBe(false);
     });
 
     it('targetCam is a THREE.Vector3', () => {
@@ -487,11 +462,12 @@ describe('three-scene helpers', () => {
       const { sphere } = createSphere(false);
       const stars = createStars(false);
       scene.add(sphere, stars);
-      const state = { targetCam: new THREE.Vector3(), mouseX: 0, mouseY: 0, targetZ: cam.position.z };
+      const planet = { mesh: sphere, pivot: new THREE.Group(), def: { speed: 0.3 } };
+      const state = { targetCam: new THREE.Vector3(), mouseX: 0, mouseY: 0, targetZ: cam.position.z, keys: { w: false, a: false, s: false, d: false, q: false, e: false }, moveSpeed: 30, followPlanet: null };
       const spy = vi.spyOn(composer, 'render');
       vi.useFakeTimers();
       try {
-        animateLoop(scene, cam, composer, sphere, stars, state);
+        animateLoop(scene, cam, composer, [planet], stars, state);
         vi.advanceTimersByTime(50);
         expect(spy).toHaveBeenCalled();
       } finally {
@@ -499,7 +475,7 @@ describe('three-scene helpers', () => {
       }
     });
 
-    it('rotates the sphere over time', () => {
+    it('rotates a planet over time', () => {
       const scene = new THREE.Scene();
       const c = makeContainer();
       const cam = createCamera(c);
@@ -508,20 +484,20 @@ describe('three-scene helpers', () => {
       const { sphere } = createSphere(false);
       const stars = createStars(false);
       scene.add(sphere, stars);
-      const state = { targetCam: new THREE.Vector3(), mouseX: 0, mouseY: 0, targetZ: cam.position.z };
+      const planet = { mesh: sphere, pivot: new THREE.Group(), def: { speed: 0.3 } };
+      const state = { targetCam: new THREE.Vector3(), mouseX: 0, mouseY: 0, targetZ: cam.position.z, keys: { w: false, a: false, s: false, d: false, q: false, e: false }, moveSpeed: 30, followPlanet: null };
       const initialYRot = sphere.rotation.y;
       vi.useFakeTimers();
       try {
-        animateLoop(scene, cam, composer, sphere, stars, state);
+        animateLoop(scene, cam, composer, [planet], stars, state);
         vi.advanceTimersByTime(100);
-        // sphere.rotation.y should have changed
         expect(sphere.rotation.y).not.toBe(initialYRot);
       } finally {
         vi.useRealTimers();
       }
     });
 
-    it('moves camera towards target position', () => {
+    it('moves camera with WASD keys', () => {
       const scene = new THREE.Scene();
       const c = makeContainer();
       const cam = createCamera(c);
@@ -530,19 +506,15 @@ describe('three-scene helpers', () => {
       const { sphere } = createSphere(false);
       const stars = createStars(false);
       scene.add(sphere, stars);
-      const state = {
-        targetCam: new THREE.Vector3(),
-        mouseX: 0.5,  // offset mouse position
-        mouseY: -0.3,
-        targetZ: cam.position.z,
-      };
-      const initialX = cam.position.x;
+      const planet = { mesh: sphere, pivot: new THREE.Group(), def: { speed: 0.3 } };
+      const state = { targetCam: new THREE.Vector3(), mouseX: 0, mouseY: 0, targetZ: cam.position.z, keys: { w: true, a: false, s: false, d: false, q: false, e: false }, moveSpeed: 30, followPlanet: null };
+      const initialZ = cam.position.z;
       vi.useFakeTimers();
       try {
-        animateLoop(scene, cam, composer, sphere, stars, state);
+        animateLoop(scene, cam, composer, [planet], stars, state);
         vi.advanceTimersByTime(100);
-        // camera should have started moving towards mouse target
-        expect(cam.position.x).not.toBe(initialX);
+        // Camera z should have changed from W key press
+        expect(cam.position.z).not.toBe(initialZ);
       } finally {
         vi.useRealTimers();
       }
@@ -861,6 +833,21 @@ describe('three-scene helpers', () => {
       const audioState = createAudioState();
       const spy = vi.spyOn(rend.domElement, 'addEventListener');
       setupPlanetClickHandler(rend, cam, sphere, audioState);
+      expect(spy).toHaveBeenCalledWith('click', expect.any(Function));
+    });
+  });
+
+  // ── setupPlanetFollowHandler ──────────────────────────────────────────
+
+  describe('setupPlanetFollowHandler', () => {
+    it('registers a click handler on the renderer domElement', () => {
+      const c = makeContainer();
+      const cam = createCamera(c);
+      const rend = createRenderer(c);
+      const planets = PLANET_DEFS.map((def) => createPlanet(def, true));
+      const state = { followPlanet: null, zoomActive: false };
+      const spy = vi.spyOn(rend.domElement, 'addEventListener');
+      setupPlanetFollowHandler(rend, cam, planets, state);
       expect(spy).toHaveBeenCalledWith('click', expect.any(Function));
     });
   });
