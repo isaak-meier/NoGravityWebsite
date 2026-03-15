@@ -34,4 +34,42 @@ describe('GoogleDriveAudioProvider', () => {
     const prov = new GoogleDriveAudioProvider({ folderId: 'F' });
     await expect(prov.listFiles()).rejects.toThrow();
   });
+
+  it('getFolder returns current folder metadata', async () => {
+    const fakeResp = { id: 'FOLDER_ID', name: 'My Folder' };
+    global.fetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(fakeResp) });
+    const prov = new GoogleDriveAudioProvider({ folderId: 'FOLDER_ID', accessToken: 'token' });
+    const folder = await prov.getFolder();
+    expect(folder).toEqual(fakeResp);
+    const calledUrl = global.fetch.mock.calls[0][0];
+    expect(calledUrl).toContain('/drive/v3/files/FOLDER_ID');
+    expect(calledUrl).toContain('fields=id%2Cname');
+  });
+
+  it('fetchFileBlob fetches file content as blob with auth', async () => {
+    const fakeBlob = new Blob(['audio-data'], { type: 'audio/mpeg' });
+    global.fetch.mockResolvedValue({ ok: true, blob: () => Promise.resolve(fakeBlob) });
+    const prov = new GoogleDriveAudioProvider({ folderId: 'F', accessToken: 'tok123' });
+    const blob = await prov.fetchFileBlob('file42');
+    expect(blob).toBe(fakeBlob);
+    const calledUrl = global.fetch.mock.calls[0][0];
+    expect(calledUrl).toContain('/drive/v3/files/file42?alt=media');
+    const calledOpts = global.fetch.mock.calls[0][1];
+    expect(calledOpts.headers['Authorization']).toBe('Bearer tok123');
+  });
+
+  it('fetchFileBlob includes apiKey when set', async () => {
+    const fakeBlob = new Blob(['data']);
+    global.fetch.mockResolvedValue({ ok: true, blob: () => Promise.resolve(fakeBlob) });
+    const prov = new GoogleDriveAudioProvider({ folderId: 'F', apiKey: 'MYKEY' });
+    await prov.fetchFileBlob('file1');
+    const calledUrl = global.fetch.mock.calls[0][0];
+    expect(calledUrl).toContain('key=MYKEY');
+  });
+
+  it('fetchFileBlob throws on non-ok response', async () => {
+    global.fetch.mockResolvedValue({ ok: false, status: 403 });
+    const prov = new GoogleDriveAudioProvider({ folderId: 'F' });
+    await expect(prov.fetchFileBlob('file1')).rejects.toThrow('Drive download error 403');
+  });
 });

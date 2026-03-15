@@ -7,6 +7,7 @@ import { UnrealBloomPass } from "/node_modules/three/examples/jsm/postprocessing
 import GUI from "/node_modules/lil-gui/dist/lil-gui.esm.min.js";
 import AudioFFT from "./audio-fft.js";
 import { isEnabled } from "./feature-flags.js";
+import appConfig from "./app-config.js";
 import {
   initializeGoogleAuth,
   requestGoogleAuth,
@@ -14,6 +15,24 @@ import {
   getAccessToken,
 } from "./google-auth.js";
 import GoogleDriveAudioProvider from "./google-drive-audio.js";
+
+async function cleanupDevServiceWorkers() {
+  if (typeof window === "undefined") return;
+  if (!window.isSecureContext || !navigator.serviceWorker) return;
+  if (window.location.hostname !== "localhost") return;
+
+  try {
+    const registrations = await navigator.serviceWorker.getRegistrations();
+    await Promise.all(registrations.map((reg) => reg.unregister()));
+
+    if (window.caches && typeof window.caches.keys === "function") {
+      const keys = await window.caches.keys();
+      await Promise.all(keys.map((key) => window.caches.delete(key)));
+    }
+  } catch (err) {
+    console.warn("Failed to cleanup local service workers:", err);
+  }
+}
 
 // helper utilities -------------------------------------------------------
 
@@ -297,6 +316,8 @@ function animateLoop(scene, camera, composer, sphere, starField, state) {
 }
 
 function initScene() {
+  cleanupDevServiceWorkers();
+
   const container = document.getElementById("three-container");
   if (!container) {
     console.warn("No #three-container found");
@@ -345,9 +366,12 @@ function initScene() {
     const playBtn = document.createElement("button");
     playBtn.textContent = "Play";
     playBtn.style.marginLeft = "8px";
-    const driveBtn = document.createElement("button");
-    driveBtn.textContent = "Google Drive";
-    driveBtn.style.marginLeft = "8px";
+    const pickerBtn = document.createElement("button");
+    pickerBtn.textContent = "Open Picker";
+    pickerBtn.style.marginLeft = "8px";
+    const folderLabel = document.createElement("span");
+    folderLabel.style.cssText = "margin-left: 8px; opacity: 0.9;";
+    folderLabel.textContent = "Folder: none";
     
     // Dropdown to select audio files from Google Drive
     const driveFilesList = document.createElement("select");
@@ -356,7 +380,8 @@ function initScene() {
     
     audioControls.appendChild(fileIn);
     audioControls.appendChild(playBtn);
-    audioControls.appendChild(driveBtn);
+    audioControls.appendChild(pickerBtn);
+    audioControls.appendChild(folderLabel);
     audioControls.appendChild(driveFilesList);
     container.appendChild(audioControls);
 
@@ -364,9 +389,108 @@ function initScene() {
     let currentFFT = null;
     let currentAudioEl = null;
     let currentDriveProvider = null;
+    const presetFolderId =
+      appConfig.googleDrive.folderId ||
+      (typeof window !== "undefined"
+        ? window.__GOOGLE_DRIVE_FOLDER_ID__
+        : null);
+    const presetApiKey =
+      appConfig.googleDrive.apiKey ||
+      (typeof window !== "undefined" ? window.__GOOGLE_API_KEY__ : null);
 
-    // Google Drive button handler
-    driveBtn.addEventListener("click", async () => {
+    function stopCurrentAudio() {
+      if (currentStream) {
+        currentStream.stop();
+        currentStream = null;
+      }
+      if (currentAudioEl) {
+        try {
+          currentAudioEl.pause();
+        } catch (err) {}
+        currentAudioEl = null;
+      }
+    }
+
+    async function loadDriveFileById(fileId) {
+      if (!fileId || !currentDriveProvider) return;
+
+      stopCurrentAudio();
+
+      // Fetch audio as blob with proper auth headers so private Drive files work
+      const blob = await currentDriveProvider.fetchFileBlob(fileId);
+      const blobUrl = URL.createObjectURL(blob);
+      const audioEl = document.createElement("audio");
+      audioEl.src = blobUrl;
+      audioEl.crossOrigin = "anonymous";
+      audioEl.controls = false;
+      audioEl.preload = "auto";
+      currentAudioEl = audioEl;
+
+      currentFFT = new AudioFFT({ audioElement: audioEl, context: null });
+      try {
+        await currentFFT.load();
+      } catch (err) {
+        console.warn("AudioFFT.load() failed:", err);
+      }
+
+      const stream = currentFFT.createStream();
+      stream.onData((spectrum) => {
+        applySpectrumToParams(spectrum, {
+          planetParams,
+          radiusCtrl,
+          bloomPass,
+          material,
+          sphere,
+          baseRadius,
+        });
+      });
+      currentStream = stream;
+
+      try {
+        await audioEl.play();
+        if (currentStream) currentStream.start();
+      } catch (err) {
+        console.warn("Auto-play failed:", err);
+      }
+    }
+
+    async function connectDriveProvider(provider, {
+      folderNameHint = "Unnamed folder",
+      autoSelectFirst = false,
+    } = {}) {
+      currentDriveProvider = provider;
+      folderLabel.textContent = `Folder: ${folderNameHint}`;
+
+      try {
+        const folder = await currentDriveProvider.getFolder();
+        if (folder && folder.name) {
+          folderLabel.textContent = `Folder: ${folder.name}`;
+        }
+      } catch (err) {
+        console.warn("Unable to fetch folder name from Drive API:", err);
+      }
+
+      const files = await currentDriveProvider.listFiles();
+      if (files.length === 0) {
+        alert("No audio files found in the selected folder");
+        return;
+      }
+
+      driveFilesList.innerHTML = '<option value="">Select an audio file...</option>';
+      files.forEach((file) => {
+        const option = new Option(file.name, file.id);
+        driveFilesList.appendChild(option);
+      });
+      driveFilesList.style.display = "inline-block";
+
+      if (autoSelectFirst) {
+        driveFilesList.value = files[0].id;
+        await loadDriveFileById(files[0].id);
+      }
+    }
+
+    // Google Drive Picker button handler
+    pickerBtn.addEventListener("click", async () => {
       try {
         // Step 1: Request Google auth
         const token = await requestGoogleAuth();
@@ -376,31 +500,23 @@ function initScene() {
         }
 
         // Step 2: Show folder picker
-        const folderId = await showGoogleDrivePicker();
-        if (!folderId) {
+        const selectedFolder = await showGoogleDrivePicker();
+        if (!selectedFolder || !selectedFolder.id) {
           console.log("User cancelled folder selection");
           return;
         }
 
-        // Step 3: Create provider instance and list files
-        currentDriveProvider = new GoogleDriveAudioProvider({
+        const folderId = selectedFolder.id;
+        const pickerFolderName = selectedFolder.name || "Unnamed folder";
+        const provider = new GoogleDriveAudioProvider({
           folderId,
           accessToken: token,
         });
 
-        const files = await currentDriveProvider.listFiles();
-        if (files.length === 0) {
-          alert("No audio files found in the selected folder");
-          return;
-        }
-
-        // Step 4: Populate dropdown with audio files
-        driveFilesList.innerHTML = '<option value="">Select an audio file...</option>';
-        files.forEach((file) => {
-          const option = new Option(file.name, file.id);
-          driveFilesList.appendChild(option);
+        await connectDriveProvider(provider, {
+          folderNameHint: pickerFolderName,
+          autoSelectFirst: false,
         });
-        driveFilesList.style.display = "inline-block";
       } catch (err) {
         console.error("Google Drive error:", err);
         alert("Error accessing Google Drive: " + err.message);
@@ -413,71 +529,33 @@ function initScene() {
       if (!fileId || !currentDriveProvider) return;
 
       try {
-        // Stop previous audio
-        if (currentStream) {
-          currentStream.stop();
-          currentStream = null;
-        }
-        if (currentAudioEl) {
-          try {
-            currentAudioEl.pause();
-          } catch (err) {}
-          currentAudioEl = null;
-        }
-
-        // Get download URL and play
-        const url = currentDriveProvider.getDownloadUrl(fileId);
-        const audioEl = document.createElement("audio");
-        audioEl.src = url;
-        audioEl.crossOrigin = "anonymous";
-        audioEl.controls = false;
-        audioEl.preload = "auto";
-        currentAudioEl = audioEl;
-
-        // Set up FFT analysis
-        currentFFT = new AudioFFT({ audioElement: audioEl, context: null });
-        try {
-          await currentFFT.load();
-        } catch (err) {
-          console.warn("AudioFFT.load() failed:", err);
-        }
-        const stream = currentFFT.createStream();
-        stream.onData((spectrum) => {
-          applySpectrumToParams(spectrum, {
-            planetParams,
-            radiusCtrl,
-            bloomPass,
-            material,
-            sphere,
-            baseRadius,
-          });
-        });
-        currentStream = stream;
-
-        // Auto-play
-        try {
-          await audioEl.play();
-          if (currentStream) currentStream.start();
-        } catch (err) {
-          console.warn("Auto-play failed:", err);
-        }
+        await loadDriveFileById(fileId);
       } catch (err) {
         console.error("Error loading audio from Drive:", err);
         alert("Error loading audio: " + err.message);
       }
     });
 
+    if (presetFolderId) {
+      pickerBtn.textContent = "Change Folder";
+      const provider = new GoogleDriveAudioProvider({
+        folderId: presetFolderId,
+        apiKey: presetApiKey || null,
+      });
+
+      connectDriveProvider(provider, {
+        folderNameHint: "Configured folder",
+        autoSelectFirst: true,
+      }).catch((err) => {
+        console.error("Configured Google Drive folder failed:", err);
+        folderLabel.textContent = "Folder: unavailable";
+      });
+    }
+
     fileIn.addEventListener("change", async (e) => {
     const f = e.target.files && e.target.files[0];
     if (!f) return;
-    if (currentStream) {
-      currentStream.stop();
-      currentStream = null;
-    }
-    if (currentAudioEl) {
-      try { currentAudioEl.pause(); } catch (err) {}
-      currentAudioEl = null;
-    }
+    stopCurrentAudio();
     const url = URL.createObjectURL(f);
     const audioEl = document.createElement("audio");
     audioEl.src = url;
