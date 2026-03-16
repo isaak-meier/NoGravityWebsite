@@ -19,6 +19,7 @@ import PyramidField from "../pyramid/pyramid-field.js";
 import SolarSystem from "./solar-system.js";
 import CameraController from "./camera-controller.js";
 import AudioManager from "./audio-manager.js";
+import Comet from "./comet.js";
 
 async function cleanupDevServiceWorkers() {
   if (typeof window === "undefined") return;
@@ -426,12 +427,6 @@ function animateLoop(scene, camera, composer, planets, starField, state, worlds)
         state.followPlanet = null;
       }
     }
-    // Shrink sun to realistic apparent size when following a planet
-    if (state.sun) {
-      const targetScale = state.followPlanet ? 0.04 : 1;
-      const s = state.sun.scale.x + (targetScale - state.sun.scale.x) * 0.04;
-      state.sun.scale.setScalar(s);
-    }
     if (state.sunLight) {
       const targetIntensity = state.followPlanet ? 1.2 : 3;
       state.sunLight.intensity += (targetIntensity - state.sunLight.intensity) * 0.04;
@@ -480,7 +475,7 @@ function animateLoop(scene, camera, composer, planets, starField, state, worlds)
 // --- Audio state management ------------------------------------------------
 
 function createAudioState() {
-  return { stream: null, fft: null, audioEl: null };
+  return { stream: null, fft: null, audioEl: null, _liveStream: null };
 }
 
 function stopAudio(audioState) {
@@ -491,6 +486,10 @@ function stopAudio(audioState) {
   if (audioState.audioEl) {
     try { audioState.audioEl.pause(); } catch (_) {}
     audioState.audioEl = null;
+  }
+  if (audioState._liveStream) {
+    for (const track of audioState._liveStream.getTracks()) track.stop();
+    audioState._liveStream = null;
   }
 }
 
@@ -548,22 +547,79 @@ function setupPlanetClickHandler(renderer, camera, sphere, audioState) {
   });
 }
 
+// --- Live audio helpers ---------------------------------------------------
+
+async function startLiveAudio(mode, audioState, onSpectrum, onNewSource) {
+  let mediaStream;
+  if (mode === "mic") {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  } else {
+    mediaStream = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: true });
+    // Stop the video track — we only need the audio
+    for (const t of mediaStream.getVideoTracks()) t.stop();
+  }
+  stopAudio(audioState);
+  audioState._liveStream = mediaStream;
+  audioState.audioEl = null;
+
+  const fft = new AudioFFT({ context: null });
+  fft.loadMediaStream(mediaStream);
+  audioState.fft = fft;
+  if (onNewSource) onNewSource();
+
+  const stream = fft.createStream();
+  stream.onData(onSpectrum);
+  stream.start();
+  audioState.stream = stream;
+  return mediaStream;
+}
+
+function stopLiveAudio(audioState) {
+  if (audioState._liveStream) {
+    for (const track of audioState._liveStream.getTracks()) track.stop();
+    audioState._liveStream = null;
+  }
+}
+
 // --- Song picker DOM ------------------------------------------------------
 
 function createSongPickerDOM() {
   const wrapper = document.createElement("div");
   wrapper.style.cssText =
     "position:absolute;bottom:12px;left:12px;z-index:20;" +
-    "background:rgba(0,0,0,0.4);padding:8px;border-radius:6px;color:#e6eef8;font-size:12px;";
+    "background:rgba(0,0,0,0.4);padding:8px;border-radius:6px;color:#e6eef8;font-size:12px;" +
+    "display:flex;align-items:center;gap:8px;flex-wrap:wrap;";
   const folderLabel = document.createElement("span");
   folderLabel.style.cssText = "opacity:0.9;";
   folderLabel.textContent = "Folder: none";
   const driveFilesList = document.createElement("select");
-  driveFilesList.style.cssText = "margin-left:8px;display:none;";
+  driveFilesList.style.cssText = "display:none;";
   driveFilesList.appendChild(new Option("Select an audio file...", ""));
+
+  const btnStyle =
+    "padding:4px 10px;border:1px solid rgba(255,255,255,0.3);border-radius:4px;" +
+    "background:rgba(255,255,255,0.08);color:#e6eef8;cursor:pointer;font-size:12px;" +
+    "transition:background 0.2s;";
+  const activeBtnStyle =
+    "padding:4px 10px;border:1px solid #60a5fa;border-radius:4px;" +
+    "background:rgba(96,165,250,0.25);color:#60a5fa;cursor:pointer;font-size:12px;" +
+    "transition:background 0.2s;";
+
+  const micBtn = document.createElement("button");
+  micBtn.textContent = "Mic";
+  micBtn.title = "Use microphone as live audio input";
+  micBtn.style.cssText = btnStyle;
+
+  const desktopBtn = document.createElement("button");
+  desktopBtn.textContent = "Desktop";
+  desktopBtn.title = "Capture system/desktop audio (via screen share)";
+  desktopBtn.style.cssText = btnStyle;
+
   wrapper.appendChild(folderLabel);
   wrapper.appendChild(driveFilesList);
-  return { wrapper, folderLabel, driveFilesList };
+  wrapper.appendChild(micBtn);
+  wrapper.appendChild(desktopBtn);
+  return { wrapper, folderLabel, driveFilesList, micBtn, desktopBtn, btnStyle, activeBtnStyle };
 }
 
 // --- Google Drive song picker ---------------------------------------------
@@ -573,9 +629,38 @@ function setupSongPicker(container, audioState, onSpectrum, onNewSource) {
   const dom = createSongPickerDOM();
   container.appendChild(dom.wrapper);
   const driveState = { provider: null };
+  let activeLiveMode = null; // "mic" | "desktop" | null
+
+  function deactivateLive() {
+    stopLiveAudio(audioState);
+    dom.micBtn.style.cssText = dom.btnStyle;
+    dom.desktopBtn.style.cssText = dom.btnStyle;
+    activeLiveMode = null;
+  }
+
+  async function toggleLive(mode) {
+    if (activeLiveMode === mode) {
+      deactivateLive();
+      stopAudio(audioState);
+      return;
+    }
+    deactivateLive();
+    try {
+      await startLiveAudio(mode, audioState, onSpectrum, onNewSource);
+      activeLiveMode = mode;
+      const activeBtn = mode === "mic" ? dom.micBtn : dom.desktopBtn;
+      activeBtn.style.cssText = dom.activeBtnStyle;
+    } catch (err) {
+      console.warn(`Live audio (${mode}) failed:`, err);
+    }
+  }
+
+  dom.micBtn.addEventListener("click", () => toggleLive("mic"));
+  dom.desktopBtn.addEventListener("click", () => toggleLive("desktop"));
 
   async function loadDriveFile(fileId) {
     if (!fileId || !driveState.provider) return;
+    deactivateLive();
     const blob = await driveState.provider.fetchFileBlob(fileId);
     await loadAudioSource(blob, audioState, onSpectrum, onNewSource);
     try {
@@ -657,6 +742,11 @@ function initScene() {
     radiusCtrl.onChange((v) => sphere.scale.setScalar(v / baseRadius));
   }
 
+  // Comet streaking across the sky, brightness driven by audio loudness
+  const comet = new Comet();
+  scene.add(comet.group);
+  if (gui) comet.setupGUI(gui);
+
   // Pyramids are deferred until a valid audio source loads.
   const worlds = solarSystem.planets.map(() => ({ pyramidField: null }));
   const SNAPSHOT_COUNT = 5;
@@ -674,7 +764,13 @@ function initScene() {
 
   const audioState = createAudioState();
   const onSpectrum = (spectrum) => {
-    if (snapshotState && snapshotState.snapshots.length < SNAPSHOT_COUNT) {
+    // Live audio: apply spectrum to pyramids in real-time every frame
+    if (audioState._liveStream) {
+      ensurePyramids();
+      worlds[0].pyramidField.setKeyframes(null); // disable keyframe tweening
+      worlds[0].pyramidField.applySpectrum(spectrum);
+    } else if (snapshotState && snapshotState.snapshots.length < SNAPSHOT_COUNT) {
+      // File playback: collect a few snapshots then switch to keyframe tweening
       if (spectrum.some((v) => v > 0)) {
         snapshotState.frameCount++;
         if (snapshotState.frameCount === 1) {
@@ -691,6 +787,10 @@ function initScene() {
         }
       }
     }
+    // Drive comet brightness from overall loudness
+    const loudness = spectrum.reduce((a, v) => a + v, 0) / spectrum.length;
+    comet.setLoudness(loudness);
+
     applySpectrumToParams(spectrum, {
       planetParams, radiusCtrl, bloomPass, material, sphere, baseRadius,
     });
@@ -719,6 +819,11 @@ function initScene() {
     requestAnimationFrame(tick);
     const t = clock.getDelta();
     solarSystem.update(t);
+    // Keep the comet orbiting around whichever planet the camera is watching
+    const _cometAnchor = new THREE.Vector3();
+    (camCtrl.followPlanet ? camCtrl.followPlanet.mesh : sphere).getWorldPosition(_cometAnchor);
+    comet.setAnchor(_cometAnchor);
+    comet.update(t);
     if (worlds) {
       for (const w of worlds) {
         if (w.pyramidField) w.pyramidField.update(t);
@@ -790,7 +895,10 @@ export {
   setupPlanetClickHandler,
   createSongPickerDOM,
   setupSongPicker,
+  startLiveAudio,
+  stopLiveAudio,
   SolarSystem,
   CameraController,
   AudioManager,
+  Comet,
 };

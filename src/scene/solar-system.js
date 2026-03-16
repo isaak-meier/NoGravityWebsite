@@ -22,24 +22,34 @@ class SolarSystem {
   }
 
   addToScene(scene) {
+    // Place sun far from blue planet (Earth-Sun distance ~150 million km, scale for scene)
+    // Assume blue planet is at orbit=12, so sun should be at (12 + 150) units along X
+    this.sun.position.set(162, 0, 0); // 12 (blue planet orbit) + 150 (scaled distance)
     scene.add(this.sun);
-    for (const p of this.planets) scene.add(p.pivot);
+    for (let i = 0; i < this.planets.length; i++) {
+      if (i === 0) {
+        this.planets[i].pivot.visible = true;
+      } else {
+        this.planets[i].pivot.visible = false;
+      }
+      scene.add(this.planets[i].pivot);
+    }
     scene.add(this.starField);
     this.sunLight = this._setupLights(scene);
   }
 
   update(dt) {
-    for (const p of this.planets) {
-      p.pivot.rotation.y += dt * p.def.speed;
-      p.mesh.rotation.y += dt * 0.2;
-      p.mesh.rotation.x += dt * 0.08;
-    }
-    this.starField.rotation.y += dt * 0.001;
+      for (const p of this.planets) {
+        // p.pivot.rotation.y += dt * p.def.speed; // Orbit disabled
+        p.mesh.rotation.y += dt * 0.2;
+        p.mesh.rotation.x += dt * 0.08;
+      }
+      this.starField.rotation.y += dt * 0.001;
   }
 
   _createSun() {
     const segs = this.isMobile ? 24 : 48;
-    const geo = new THREE.SphereGeometry(3, segs, segs);
+    const geo = new THREE.SphereGeometry(6, segs, segs); // Increased radius from 3 to 6
     const mat = new THREE.MeshBasicMaterial({ color: 0xffcc33 });
     const sun = new THREE.Mesh(geo, mat);
     sun.layers.enable(1);
@@ -90,11 +100,11 @@ class SolarSystem {
   }
 
   _setupLights(scene) {
-    const sunLight = new THREE.PointLight(0xfff3d6, 3, 300, 0.6);
+    const sunLight = new THREE.PointLight(0xfff3d6, 6, 300, 0.64); // Increased intensity
     sunLight.position.set(0, 0, 0);
     scene.add(sunLight);
-    scene.add(new THREE.AmbientLight(0x6b6f88, 0.25));
-    scene.add(new THREE.HemisphereLight(0xddeeff, 0x101020, 0.2));
+    scene.add(new THREE.AmbientLight(0x6b6f88, 0.5)); // Increased ambient
+    scene.add(new THREE.HemisphereLight(0xddeeff, 0x101020, 0.5));
     return sunLight;
   }
 }

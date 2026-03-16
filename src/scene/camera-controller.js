@@ -14,6 +14,7 @@ class CameraController {
     this.zoomActive = true;
     this.zoomSpeed = 0.02;
     this.followPlanet = null;
+    this.mouseLookEnabled = true;
     this.sun = null;
     this.sunLight = null;
     this._attach(container);
@@ -40,7 +41,10 @@ class CameraController {
     window.addEventListener("keydown", (e) => {
       const k = e.key.toLowerCase();
       if (k in this.keys) this.keys[k] = true;
-      if (e.key === "Escape") this.followPlanet = null;
+      if (e.key === "Escape") {
+        this.followPlanet = null;
+        this.mouseLookEnabled = !this.mouseLookEnabled;
+      }
     });
     window.addEventListener("keyup", (e) => {
       const k = e.key.toLowerCase();
@@ -159,8 +163,8 @@ class CameraController {
     this.followPlanet.mesh.getWorldPosition(planetPos);
     // Fixed offset so the camera doesn't orbit with the planet
     const targetPos = planetPos.clone();
-    targetPos.y += 3;
-    targetPos.z += 8;
+    targetPos.y += 5;
+    targetPos.z += 12;
     cam.position.lerp(targetPos, 0.03);
     cam.lookAt(planetPos);
   }
@@ -186,11 +190,16 @@ class CameraController {
       }
     }
     // Mouse-driven camera look
-    cam.rotation.order = "YXZ";
-    const targetYaw = -this.mouseX * Math.PI * 0.12;
-    const targetPitch = -this.mouseY * Math.PI * 0.06 - 0.15;
-    cam.rotation.y += (targetYaw - cam.rotation.y) * 0.06;
-    cam.rotation.x += (targetPitch - cam.rotation.x) * 0.06;
+    if (this.mouseLookEnabled) {
+      cam.rotation.order = "YXZ";
+      const sensitivityYaw = 0.24;
+      const sensitivityPitch = 0.12;
+      const lerpSpeed = 0.12;
+      const targetYaw = -this.mouseX * Math.PI * sensitivityYaw;
+      const targetPitch = -this.mouseY * Math.PI * sensitivityPitch - 0.15;
+      cam.rotation.y += (targetYaw - cam.rotation.y) * lerpSpeed;
+      cam.rotation.x += (targetPitch - cam.rotation.x) * lerpSpeed;
+    }
   }
 }
 

@@ -5,8 +5,8 @@ import * as THREE from "/node_modules/three/build/three.module.js";
 const BANDS = 8;
 
 export default class PyramidField {
-  constructor({ count = 12, orbitRadius = 1.46, size = 0.40595, rotationSpeed = 0.15, shardSpin = 0.25, tweenSpeed = 1.0 } = {}) {
-    this.config = { count, orbitRadius, size, rotationSpeed, shardSpin, tweenSpeed };
+  constructor({ count = 12, orbitRadius = 1.46, size = 0.40595, rotationSpeed = 0.15, shardSpin = 0.25, tweenSpeed = 1.0, orbitPulseSpeed = 0.3 } = {}) {
+    this.config = { count, orbitRadius, size, rotationSpeed, shardSpin, tweenSpeed, orbitPulseSpeed };
     this.group = new THREE.Group();
     this.material = new THREE.MeshStandardMaterial({
       color: 0x60a5fa,
@@ -15,10 +15,17 @@ export default class PyramidField {
       transparent: true,
       opacity: 0.9,
     });
-    // Each entry: { anchor: THREE.Group, shards: THREE.Mesh[], basePositions: Float32Array[] }
+    // Each entry: { anchor: THREE.Group, shards: THREE.Mesh[], basePositions: Float32Array[], dir: THREE.Vector3 }
     this._clusters = [];
     this._geometries = [];
     this._spectrum = null;
+    this._orbitTime = 0;
+    this._orbitMin = 1;
+    this._orbitMax = 3;
+    this._introRadius = 80;
+    this._introActive = true;
+    this._introLerpSpeed = 2.;
+    this._spectrumSmoothing = 0.08;
     // Keyframe tween state
     this._keyframes = null; // array of pre-computed shard states per keyframe
     this._tweenTime = 0;
@@ -29,6 +36,7 @@ export default class PyramidField {
   rebuild() {
     // Dispose previous
     this._disposeContents();
+    this._introActive = true;
 
     const { count: n, orbitRadius: r, size } = this.config;
     const golden = Math.PI * (3 - Math.sqrt(5));
@@ -86,7 +94,7 @@ export default class PyramidField {
         }
       }
 
-      this._clusters.push({ anchor, shards, basePositions });
+      this._clusters.push({ anchor, shards, basePositions, dir: dir.clone() });
     }
   }
 
@@ -103,7 +111,6 @@ export default class PyramidField {
     }
 
     const len = spectrum.length;
-    // Compute per-band energy
     const bandEnergies = new Float32Array(BANDS);
     let totalEnergy = 0;
     for (let b = 0; b < BANDS; b++) {
@@ -116,6 +123,7 @@ export default class PyramidField {
     }
 
     const { size } = this.config;
+    const lerp = this._spectrumSmoothing;
     for (const cluster of this._clusters) {
       const { shards, basePositions } = cluster;
       for (let s = 0; s < shards.length; s++) {
@@ -123,18 +131,21 @@ export default class PyramidField {
         const bp = basePositions[s];
         const b = mesh.userData.band;
         const energy = bandEnergies[b];
-        // Radial explosion: push shards outward from pyramid centre in all axes
-        const force = energy * size * 4;
-        const dx = bp[0] === 0 ? 0 : Math.sign(bp[0]) * force;
-        const dz = bp[2] === 0 ? 0 : Math.sign(bp[2]) * force;
-        const dy = force * (1 + b / BANDS); // higher bands fly further outward
-        mesh.position.set(bp[0] + dx, bp[1] + dy, bp[2] + dz);
-        // Tumble shards with energy
-        mesh.rotation.x = energy * Math.PI * 0.5;
-        mesh.rotation.z = energy * Math.PI * 0.3 * (s % 2 === 0 ? 1 : -1);
-        // Scale shards with energy
-        const sc = 1.0 + energy * 0.8;
-        mesh.scale.setScalar(sc);
+        const force = energy * size * 1.8;
+        const tx = bp[0] + (bp[0] === 0 ? 0 : Math.sign(bp[0]) * force);
+        const tz = bp[2] + (bp[2] === 0 ? 0 : Math.sign(bp[2]) * force);
+        const ty = bp[1] + force * (1 + b / BANDS);
+        // Smoothly interpolate toward target instead of snapping
+        mesh.position.x += (tx - mesh.position.x) * lerp;
+        mesh.position.y += (ty - mesh.position.y) * lerp;
+        mesh.position.z += (tz - mesh.position.z) * lerp;
+        const targetRx = energy * Math.PI * 0.15;
+        const targetRz = energy * Math.PI * 0.1 * (s % 2 === 0 ? 1 : -1);
+        mesh.rotation.x += (targetRx - mesh.rotation.x) * lerp;
+        mesh.rotation.z += (targetRz - mesh.rotation.z) * lerp;
+        const sc = 1.0 + energy * 0.35;
+        const curSc = mesh.scale.x;
+        mesh.scale.setScalar(curSc + (sc - curSc) * lerp);
       }
     }
   }
@@ -171,15 +182,15 @@ export default class PyramidField {
           const bp = cluster.basePositions[s];
           const b = mesh.userData.band;
           const energy = bandEnergies[b];
-          const force = energy * size * 4;
+          const force = energy * size * 1.8;
           const dx = bp[0] === 0 ? 0 : Math.sign(bp[0]) * force;
           const dz = bp[2] === 0 ? 0 : Math.sign(bp[2]) * force;
           const dy = force * (1 + b / BANDS);
           return {
             px: bp[0] + dx, py: bp[1] + dy, pz: bp[2] + dz,
-            rx: energy * Math.PI * 0.5,
-            rz: energy * Math.PI * 0.3 * (s % 2 === 0 ? 1 : -1),
-            sc: 1.0 + energy * 0.8,
+            rx: energy * Math.PI * 0.15,
+            rz: energy * Math.PI * 0.1 * (s % 2 === 0 ? 1 : -1),
+            sc: 1.0 + energy * 0.35,
           };
         });
       });
@@ -207,6 +218,29 @@ export default class PyramidField {
 
   update(deltaTime) {
     this.group.rotation.y += deltaTime * this.config.rotationSpeed;
+
+    // Oscillate orbit radius between _orbitMin and _orbitMax
+    this._orbitTime += deltaTime * this.config.orbitPulseSpeed;
+    const t01 = (Math.sin(this._orbitTime) + 1) * 0.5; // 0..1
+    const targetR = this._orbitMin + (this._orbitMax - this._orbitMin) * t01;
+
+    let r;
+    if (this._introActive) {
+      this._introRadius += (targetR - this._introRadius) * this._introLerpSpeed * deltaTime;
+      if (Math.abs(this._introRadius - targetR) < 0.05) {
+        this._introActive = false;
+      }
+      r = this._introRadius;
+    } else {
+      r = targetR;
+    }
+    for (const cluster of this._clusters) {
+      cluster.anchor.position.set(
+        cluster.dir.x * r,
+        cluster.dir.y * r,
+        cluster.dir.z * r,
+      );
+    }
 
     // Spin each shard around its local Y axis
     for (const cluster of this._clusters) {
@@ -259,6 +293,7 @@ export default class PyramidField {
     folder.add(this.config, "rotationSpeed", 0, 2, 0.01).name("Orbit Speed");
     folder.add(this.config, "shardSpin", 0, 5, 0.01).name("Shard Spin");
     folder.add(this.config, "tweenSpeed", 0.1, 5, 0.01).name("Tween Speed");
+    folder.add(this.config, "orbitPulseSpeed", 0.05, 2, 0.01).name("Orbit Pulse Speed");
     folder.open();
     return folder;
   }

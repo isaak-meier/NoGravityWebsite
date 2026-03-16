@@ -5,17 +5,7 @@ class AudioManager {
     this.stream = null;
     this.fft = null;
     this.audioEl = null;
-  }
-
-  stop() {
-    if (this.stream) {
-      this.stream.stop();
-      this.stream = null;
-    }
-    if (this.audioEl) {
-      try { this.audioEl.pause(); } catch (_) {}
-      this.audioEl = null;
-    }
+    this._liveStream = null;
   }
 
   async toggle() {
@@ -44,6 +34,48 @@ class AudioManager {
     const stream = fft.createStream();
     stream.onData(onSpectrum);
     this.stream = stream;
+  }
+
+  /**
+   * Connect a live MediaStream (microphone or desktop capture) as the
+   * audio source. Replaces any previously loaded file source.
+   * @param {MediaStream} mediaStream
+   * @param {Function} onSpectrum - called each frame with normalised spectrum
+   * @param {Function} [onNewSource]
+   */
+  async loadLiveSource(mediaStream, onSpectrum, onNewSource) {
+    this.stop();
+    this._liveStream = mediaStream;
+    this.audioEl = null; // no file playback for live
+
+    const fft = new AudioFFT({ context: null });
+    fft.loadMediaStream(mediaStream);
+    this.fft = fft;
+    if (onNewSource) onNewSource();
+
+    const stream = fft.createStream();
+    stream.onData(onSpectrum);
+    stream.start();
+    this.stream = stream;
+  }
+
+  stopLive() {
+    if (this._liveStream) {
+      for (const track of this._liveStream.getTracks()) track.stop();
+      this._liveStream = null;
+    }
+  }
+
+  stop() {
+    if (this.stream) {
+      this.stream.stop();
+      this.stream = null;
+    }
+    if (this.audioEl) {
+      try { this.audioEl.pause(); } catch (_) {}
+      this.audioEl = null;
+    }
+    this.stopLive();
   }
 
   static createAudioElement(src) {

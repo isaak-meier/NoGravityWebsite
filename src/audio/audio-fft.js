@@ -149,6 +149,29 @@ export class AudioFFT {
   }
 
   /**
+   * Connect a live MediaStream (mic or desktop audio) to the analyser.
+   * No audio element is used — the stream feeds the analyser directly.
+   * Audio is NOT routed to speakers to avoid feedback loops with mics.
+   */
+  loadMediaStream(mediaStream) {
+    if (!this.context) throw new Error('No AudioContext');
+    if (!this.analyser) {
+      this.analyser = this.context.createAnalyser();
+      this.analyser.fftSize = this.fftSize;
+      this.analyser.smoothingTimeConstant = this.smoothingTimeConstant;
+    }
+    // Disconnect previous source if any
+    if (this.source) {
+      try { this.source.disconnect(); } catch (_) {}
+    }
+    this.source = this.context.createMediaStreamSource(mediaStream);
+    this.source.connect(this.analyser);
+    // Don't connect analyser → destination to avoid mic feedback.
+    // For desktop audio the user hears it through their normal output already.
+    return this;
+  }
+
+  /**
    * Accept a decoded AudioBuffer and create a buffer source connected to analyser.
    */
   setBuffer(audioBuffer) {
