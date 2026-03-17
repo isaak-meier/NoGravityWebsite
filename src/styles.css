@@ -25,10 +25,123 @@ html, body {
   touch-action: none;
 }
 
-/* Keep page title above the 3D canvas */
-h1 {
+/* ── 3D shimmering title ─────────────────────────────── */
+.site-title {
+  --shimmer-dur: 4s;
+  --glint-dur: 3s;
+  --float-dur: 6s;
+  --float-amp: -4px;
+
   position: relative;
   z-index: 2;
-  margin: 1rem auto 0;
+  margin: 0;
+  padding: 1.2rem 0 0.6rem;
+  text-align: center;
+  font-family: 'Orbitron', sans-serif;
+  font-weight: 900;
+  font-size: clamp(2.4rem, 8vw, 5.5rem);
+  letter-spacing: 0.35em;
+  text-transform: uppercase;
+  color: transparent;
+  background: linear-gradient(
+    120deg,
+    #cbd5e1 0%,
+    #f0f4ff 18%,
+    #60a5fa 36%,
+    #a78bfa 50%,
+    #60a5fa 64%,
+    #f0f4ff 82%,
+    #cbd5e1 100%
+  );
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+
+  text-shadow:
+    0 1px 0 rgba(96,165,250,0.4),
+    0 2px 0 rgba(96,165,250,0.3),
+    0 3px 0 rgba(96,165,250,0.2),
+    0 4px 0 rgba(96,165,250,0.15),
+    0 5px 0 rgba(96,165,250,0.1),
+    0 8px 20px rgba(96,165,250,0.25),
+    0 0 40px rgba(96,165,250,0.12);
+
+  animation:
+    shimmer var(--shimmer-dur) ease-in-out infinite,
+    float   var(--float-dur)   ease-in-out infinite;
+  user-select: none;
+  pointer-events: none;
+}
+
+.site-title::after {
+  content: attr(data-text);
+  position: absolute;
+  inset: 0;
+  padding: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  color: transparent;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255,255,255,0.5) 45%,
+    rgba(255,255,255,0.8) 50%,
+    rgba(255,255,255,0.5) 55%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: glint var(--glint-dur) ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes shimmer {
+  0%, 100% { background-position: 100% 50%; }
+  50%      { background-position: 0% 50%; }
+}
+
+@keyframes glint {
+  0%, 100% { background-position: 200% 50%; }
+  50%      { background-position: -100% 50%; }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(var(--float-amp)); }
+}
+
+/* Style lil-gui inline next to Mic button */
+.lil-gui.lil-root {
+  --background-color: rgba(0,0,0,0.4);
+  --title-background-color: transparent;
+  --title-text-color: #e6eef8;
+  --font-size: 12px;
+  --widget-color: rgba(255,255,255,0.15);
+  --focus-color: rgba(96,165,250,0.5);
+  --number-color: #60a5fa;
+  --string-color: #60a5fa;
+  width: auto !important;
+  position: relative !important;
+}
+
+.lil-gui.lil-root > .lil-title {
+  padding: 4px 10px;
+  border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 4px;
+  background: rgba(255,255,255,0.08);
+  color: #e6eef8;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.lil-gui.lil-root > .lil-title:hover {
+  background: rgba(255,255,255,0.15);
+}
+
+.lil-gui.lil-root > .lil-children {
+  max-height: 50vh;
+  overflow-y: auto;
 }
 

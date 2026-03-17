@@ -1,9 +1,10 @@
-import * as THREE from "/node_modules/three/build/three.module.js";
+import * as THREE from "three";
 
 class CameraController {
-  constructor(container, camera) {
+  constructor(container, camera, { isMobile = false } = {}) {
     this.camera = camera;
     this.container = container;
+    this.isMobile = isMobile;
     this.mouseX = 0;
     this.mouseY = 0;
     this.targetZ = camera.position.z;
@@ -161,10 +162,11 @@ class CameraController {
     const cam = this.camera;
     const planetPos = new THREE.Vector3();
     this.followPlanet.mesh.getWorldPosition(planetPos);
-    // Fixed offset so the camera doesn't orbit with the planet
     const targetPos = planetPos.clone();
-    targetPos.y += 5;
-    targetPos.z += 12;
+    const offsetY = this.isMobile ? 8 : 5;
+    const offsetZ = this.isMobile ? 20 : 12;
+    targetPos.y += offsetY;
+    targetPos.z += offsetZ;
     cam.position.lerp(targetPos, 0.03);
     cam.lookAt(planetPos);
   }
@@ -192,13 +194,13 @@ class CameraController {
     // Mouse-driven camera look
     if (this.mouseLookEnabled) {
       cam.rotation.order = "YXZ";
-      const sensitivityYaw = 0.24;
-      const sensitivityPitch = 0.12;
-      const lerpSpeed = 0.12;
-      const targetYaw = -this.mouseX * Math.PI * sensitivityYaw;
-      const targetPitch = -this.mouseY * Math.PI * sensitivityPitch - 0.15;
-      cam.rotation.y += (targetYaw - cam.rotation.y) * lerpSpeed;
-      cam.rotation.x += (targetPitch - cam.rotation.x) * lerpSpeed;
+      // Continuous pan with deadzone in the center
+      const panSpeed = 1;
+      const deadzone = 0.15;
+      const applyDeadzone = (v) =>
+        Math.abs(v) < deadzone ? 0 : (v - Math.sign(v) * deadzone) / (1 - deadzone);
+      cam.rotation.y -= applyDeadzone(this.mouseX) * panSpeed * dt;
+      cam.rotation.x -= applyDeadzone(this.mouseY) * panSpeed * dt;
     }
   }
 }

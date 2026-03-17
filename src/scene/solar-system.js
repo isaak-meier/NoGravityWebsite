@@ -1,4 +1,4 @@
-import * as THREE from "/node_modules/three/build/three.module.js";
+import * as THREE from "three";
 
 const PLANET_DEFS = [
   { color: 0x60a5fa, radius: 0.9, orbit: 12, speed: 0.3,  label: "Blue"   },

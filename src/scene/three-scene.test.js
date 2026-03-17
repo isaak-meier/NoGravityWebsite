@@ -57,7 +57,7 @@ vi.mock('/node_modules/three/build/three.module.js', async (importOriginal) => {
   };
 });
 
-import * as THREE from '/node_modules/three/build/three.module.js';
+import * as THREE from 'three';
 import { setFlag } from '../config/feature-flags.js';
 import {
   detectMobile,

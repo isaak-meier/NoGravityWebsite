@@ -9,18 +9,23 @@
   <script type="importmap">
   {
     "imports": {
-      "three": "/node_modules/three/build/three.module.js"
+      "three": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.module.js",
+      "three/": "https://cdn.jsdelivr.net/npm/three@0.182.0/",
+      "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.21.0/dist/lil-gui.esm.min.js"
     }
   }
   </script>
   <link rel="stylesheet" href="src/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
   <!-- Google APIs for Drive and Picker -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="https://apis.google.com/js/api.js" async defer></script>
 </head>
 
 <body>
-  <h1 style="text-align:center;margin-top:1rem;">NXGRXVITY</h1>
+  <h1 class="site-title" data-text="NXGRXVITY">NXGRXVITY</h1>
   <div id="three-container"></div>
   <script type="module" src="src/scene/three-scene.js"></script>
 </body>

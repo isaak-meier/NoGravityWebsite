@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import * as THREE from '/node_modules/three/build/three.module.js';
+import * as THREE from 'three';
 import PyramidField from './pyramid-field.js';
 
 describe('PyramidField', () => {

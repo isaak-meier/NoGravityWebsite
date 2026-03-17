@@ -1,10 +1,8 @@
-// Import ES module build from node_modules so the browser can resolve it when served statically
-import * as THREE from "/node_modules/three/build/three.module.js";
-import { EffectComposer } from "/node_modules/three/examples/jsm/postprocessing/EffectComposer.js";
-import { RenderPass } from "/node_modules/three/examples/jsm/postprocessing/RenderPass.js";
-import { UnrealBloomPass } from "/node_modules/three/examples/jsm/postprocessing/UnrealBloomPass.js";
-// GUI library for runtime tweaking
-import GUI from "/node_modules/lil-gui/dist/lil-gui.esm.min.js";
+import * as THREE from "three";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import GUI from "lil-gui";
 import AudioFFT from "../audio/audio-fft.js";
 import { isEnabled } from "../config/feature-flags.js";
 import appConfig from "../config/app-config.js";
@@ -227,7 +225,8 @@ function setupLights(scene) {
  * @param {THREE.Object3D} starField - object to toggle visibility
  */
 function setupGUI(material, bloomPass, starField) {
-  const gui = new GUI();
+  const gui = new GUI({ closeFolders: true, autoPlace: false });
+  gui.close();
   const planet = gui.addFolder("Planet");
   planet.addColor(material, "color");
   planet.add(material, "metalness", 0, 1);
@@ -235,15 +234,12 @@ function setupGUI(material, bloomPass, starField) {
   planet.add(material, "clearcoat", 0, 1);
   planet.add(material, "clearcoatRoughness", 0, 1);
   planet.add(material, "reflectivity", 0, 1);
-  planet.open();
   const effects = gui.addFolder("Effects");
   effects.add(bloomPass, "strength", 0, 3);
   effects.add(bloomPass, "radius", 0, 1);
   effects.add(bloomPass, "threshold", 0, 1);
-  effects.open();
   const stars = gui.addFolder("Stars");
   stars.add(starField, "visible");
-  stars.open();
   // return both gui and effects folder so callers can add extra controls there
   return { gui, effects };
 }
@@ -255,6 +251,81 @@ function setupGUI(material, bloomPass, starField) {
  * @param {object} state - interaction state with startDistance / zoomActive
  * @param {THREE.Camera} camera - camera to reposition on slider change
  */
+function setupTitleGUI(gui) {
+  const el = document.querySelector('.site-title');
+  if (!el) return;
+
+  const params = {
+    shimmerSpeed: 4,
+    glintSpeed: 3,
+    floatHeight: 4,
+    floatSpeed: 6,
+    spacing: 0.35,
+    depth: 1,
+    glow: 1,
+    color: '#60a5fa',
+  };
+
+  function hexToRGB(hex) {
+    return [
+      parseInt(hex.slice(1, 3), 16),
+      parseInt(hex.slice(3, 5), 16),
+      parseInt(hex.slice(5, 7), 16),
+    ];
+  }
+
+  function updateShadow() {
+    const d = params.depth;
+    const g = params.glow;
+    const [r, gn, b] = hexToRGB(params.color);
+    el.style.textShadow = [
+      `0 ${1 * d}px 0 rgba(${r},${gn},${b},${(0.4 * d).toFixed(2)})`,
+      `0 ${2 * d}px 0 rgba(${r},${gn},${b},${(0.3 * d).toFixed(2)})`,
+      `0 ${3 * d}px 0 rgba(${r},${gn},${b},${(0.2 * d).toFixed(2)})`,
+      `0 ${4 * d}px 0 rgba(${r},${gn},${b},${(0.15 * d).toFixed(2)})`,
+      `0 ${5 * d}px 0 rgba(${r},${gn},${b},${(0.1 * d).toFixed(2)})`,
+      `0 ${(8 * d).toFixed(1)}px ${(20 * g).toFixed(1)}px rgba(${r},${gn},${b},${(0.25 * g).toFixed(2)})`,
+      `0 0 ${(40 * g).toFixed(1)}px rgba(${r},${gn},${b},${(0.12 * g).toFixed(2)})`,
+    ].join(', ');
+  }
+
+  function updateGradient() {
+    const c = params.color;
+    el.style.background = `linear-gradient(120deg, #cbd5e1 0%, #f0f4ff 18%, ${c} 36%, #a78bfa 50%, ${c} 64%, #f0f4ff 82%, #cbd5e1 100%)`;
+    el.style.backgroundSize = '250% 100%';
+    el.style.webkitBackgroundClip = 'text';
+    el.style.backgroundClip = 'text';
+  }
+
+  const folder = gui.addFolder('Title');
+
+  folder.add(params, 'shimmerSpeed', 1, 10, 0.1).name('Shimmer Speed')
+    .onChange(v => el.style.setProperty('--shimmer-dur', v + 's'));
+
+  folder.add(params, 'glintSpeed', 1, 8, 0.1).name('Glint Speed')
+    .onChange(v => el.style.setProperty('--glint-dur', v + 's'));
+
+  folder.add(params, 'floatHeight', 0, 20, 0.5).name('Float Height')
+    .onChange(v => el.style.setProperty('--float-amp', -v + 'px'));
+
+  folder.add(params, 'floatSpeed', 1, 12, 0.1).name('Float Speed')
+    .onChange(v => el.style.setProperty('--float-dur', v + 's'));
+
+  folder.add(params, 'spacing', 0, 0.8, 0.01).name('Letter Spacing')
+    .onChange(v => { el.style.letterSpacing = v + 'em'; });
+
+  folder.add(params, 'depth', 0, 3, 0.05).name('3D Depth')
+    .onChange(updateShadow);
+
+  folder.add(params, 'glow', 0, 3, 0.05).name('Glow')
+    .onChange(updateShadow);
+
+  folder.addColor(params, 'color').name('Accent Color')
+    .onChange(() => { updateShadow(); updateGradient(); });
+
+  folder.open();
+}
+
 function setupCameraGUI(gui, state, camera) {
   const camFolder = gui.addFolder("Camera");
   camFolder.add(state, "startDistance", 50, 800).name("Start Distance").onChange((v) => {
@@ -263,7 +334,6 @@ function setupCameraGUI(gui, state, camera) {
     state.zoomActive = true;
   });
   camFolder.add(state, "zoomSpeed", 0.005, 0.1).name("Zoom Speed");
-  camFolder.open();
 }
 
 /**
@@ -550,14 +620,7 @@ function setupPlanetClickHandler(renderer, camera, sphere, audioState) {
 // --- Live audio helpers ---------------------------------------------------
 
 async function startLiveAudio(mode, audioState, onSpectrum, onNewSource) {
-  let mediaStream;
-  if (mode === "mic") {
-    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-  } else {
-    mediaStream = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: true });
-    // Stop the video track — we only need the audio
-    for (const t of mediaStream.getVideoTracks()) t.stop();
-  }
+  const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
   stopAudio(audioState);
   audioState._liveStream = mediaStream;
   audioState.audioEl = null;
@@ -583,15 +646,19 @@ function stopLiveAudio(audioState) {
 
 // --- Song picker DOM ------------------------------------------------------
 
-function createSongPickerDOM() {
+function createSongPickerDOM(isMobile) {
   const wrapper = document.createElement("div");
-  wrapper.style.cssText =
-    "position:absolute;bottom:12px;left:12px;z-index:20;" +
-    "background:rgba(0,0,0,0.4);padding:8px;border-radius:6px;color:#e6eef8;font-size:12px;" +
-    "display:flex;align-items:center;gap:8px;flex-wrap:wrap;";
-  const folderLabel = document.createElement("span");
-  folderLabel.style.cssText = "opacity:0.9;";
-  folderLabel.textContent = "Folder: none";
+  if (isMobile) {
+    wrapper.style.cssText =
+      "position:absolute;bottom:0;left:0;z-index:20;" +
+      "background:rgba(0,0,0,0.5);padding:10px;border-top-right-radius:6px;color:#e6eef8;font-size:14px;" +
+      "display:flex;align-items:center;gap:10px;flex-wrap:wrap;";
+  } else {
+    wrapper.style.cssText =
+      "position:absolute;bottom:12px;left:12px;z-index:20;" +
+      "background:rgba(0,0,0,0.4);padding:8px;border-radius:6px;color:#e6eef8;font-size:12px;" +
+      "display:flex;align-items:center;gap:8px;flex-wrap:wrap;";
+  }
   const driveFilesList = document.createElement("select");
   driveFilesList.style.cssText = "display:none;";
   driveFilesList.appendChild(new Option("Select an audio file...", ""));
@@ -610,23 +677,16 @@ function createSongPickerDOM() {
   micBtn.title = "Use microphone as live audio input";
   micBtn.style.cssText = btnStyle;
 
-  const desktopBtn = document.createElement("button");
-  desktopBtn.textContent = "Desktop";
-  desktopBtn.title = "Capture system/desktop audio (via screen share)";
-  desktopBtn.style.cssText = btnStyle;
-
-  wrapper.appendChild(folderLabel);
   wrapper.appendChild(driveFilesList);
   wrapper.appendChild(micBtn);
-  wrapper.appendChild(desktopBtn);
-  return { wrapper, folderLabel, driveFilesList, micBtn, desktopBtn, btnStyle, activeBtnStyle };
+  return { wrapper, driveFilesList, micBtn, btnStyle, activeBtnStyle };
 }
 
 // --- Google Drive song picker ---------------------------------------------
 
-function setupSongPicker(container, audioState, onSpectrum, onNewSource) {
+function setupSongPicker(container, audioState, onSpectrum, onNewSource, isMobile) {
   initializeGoogleAuth();
-  const dom = createSongPickerDOM();
+  const dom = createSongPickerDOM(isMobile);
   container.appendChild(dom.wrapper);
   const driveState = { provider: null };
   let activeLiveMode = null; // "mic" | "desktop" | null
@@ -634,29 +694,26 @@ function setupSongPicker(container, audioState, onSpectrum, onNewSource) {
   function deactivateLive() {
     stopLiveAudio(audioState);
     dom.micBtn.style.cssText = dom.btnStyle;
-    dom.desktopBtn.style.cssText = dom.btnStyle;
     activeLiveMode = null;
   }
 
-  async function toggleLive(mode) {
-    if (activeLiveMode === mode) {
+  async function toggleLive() {
+    if (activeLiveMode === "mic") {
       deactivateLive();
       stopAudio(audioState);
       return;
     }
     deactivateLive();
     try {
-      await startLiveAudio(mode, audioState, onSpectrum, onNewSource);
-      activeLiveMode = mode;
-      const activeBtn = mode === "mic" ? dom.micBtn : dom.desktopBtn;
-      activeBtn.style.cssText = dom.activeBtnStyle;
+      await startLiveAudio("mic", audioState, onSpectrum, onNewSource);
+      activeLiveMode = "mic";
+      dom.micBtn.style.cssText = dom.activeBtnStyle;
     } catch (err) {
-      console.warn(`Live audio (${mode}) failed:`, err);
+      console.warn("Live audio (mic) failed:", err);
     }
   }
 
-  dom.micBtn.addEventListener("click", () => toggleLive("mic"));
-  dom.desktopBtn.addEventListener("click", () => toggleLive("desktop"));
+  dom.micBtn.addEventListener("click", () => toggleLive());
 
   async function loadDriveFile(fileId) {
     if (!fileId || !driveState.provider) return;
@@ -678,15 +735,10 @@ function setupSongPicker(container, audioState, onSpectrum, onNewSource) {
     try { await loadDriveFile(e.target.value); } catch (err) { console.error("Error loading audio:", err); }
   });
 
-  async function connectDrive(provider, folderNameHint, autoSelectFirst) {
+  async function connectDrive(provider, autoSelectFirst) {
     driveState.provider = provider;
-    dom.folderLabel.textContent = `Folder: ${folderNameHint}`;
-    try {
-      const folder = await provider.getFolder();
-      if (folder && folder.name) dom.folderLabel.textContent = `Folder: ${folder.name}`;
-    } catch (err) { console.warn("Unable to fetch folder name:", err); }
     const files = await provider.listAllFiles();
-    if (files.length === 0) { dom.folderLabel.textContent += " (empty)"; return; }
+    if (files.length === 0) return;
     dom.driveFilesList.innerHTML = '<option value="">Select an audio file...</option>';
     files.forEach((f) => dom.driveFilesList.appendChild(new Option(f.name, f.id)));
     dom.driveFilesList.style.display = "inline-block";
@@ -702,11 +754,11 @@ function setupSongPicker(container, audioState, onSpectrum, onNewSource) {
     (typeof window !== "undefined" ? window.__GOOGLE_API_KEY__ : null);
   if (presetFolderId) {
     const provider = new GoogleDriveAudioProvider({ folderId: presetFolderId, apiKey: presetApiKey || null });
-    connectDrive(provider, "Configured folder", true).catch((err) => {
+    connectDrive(provider, true).catch((err) => {
       console.error("Configured Google Drive folder failed:", err);
-      dom.folderLabel.textContent = "Folder: unavailable";
     });
   }
+  return dom.wrapper;
 }
 
 // --- Scene initialization -------------------------------------------------
@@ -797,12 +849,13 @@ function initScene() {
   };
 
   setupPlanetClickHandler(renderer, camera, sphere, audioState);
-  setupSongPicker(container, audioState, onSpectrum, () => {
+  const pickerWrapper = setupSongPicker(container, audioState, onSpectrum, () => {
     snapshotState = { snapshots: [], frameCount: 0 };
-  });
+  }, isMobile);
+  if (gui) pickerWrapper.appendChild(gui.domElement);
 
   // Camera controller via CameraController class
-  const camCtrl = new CameraController(container, camera);
+  const camCtrl = new CameraController(container, camera, { isMobile });
   camCtrl.sun = solarSystem.sun;
   camCtrl.sunLight = solarSystem.sunLight;
   camCtrl.setupFollowHandler(renderer, solarSystem.planets);
@@ -810,6 +863,7 @@ function initScene() {
   camCtrl.followPlanet = solarSystem.planets[0];
   camCtrl.zoomActive = false;
   if (gui) camCtrl.setupGUI(gui);
+  if (gui) setupTitleGUI(gui);
 
   window.addEventListener("resize", () => handleResize(container, camera, renderer, composer));
 
@@ -881,6 +935,7 @@ export {
   setupLights,
   setupGUI,
   setupInteractions,
+  setupTitleGUI,
   setupCameraGUI,
   setupPlanetFollowHandler,
   handleResize,
