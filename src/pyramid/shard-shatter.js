@@ -54,15 +54,7 @@ function subdivideTrianglesOnce(triangles) {
 const FRAGMENTS_PER_LEVEL = [18, 54, 162];
 
 function makeFragmentGeometry() {
-  const verts = new Float32Array([
-     0,                1,  0,
-    -Math.sqrt(3) / 2, -0.5, 0,
-     Math.sqrt(3) / 2, -0.5, 0,
-  ]);
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
-  geo.computeVertexNormals();
-  return geo;
+  return new THREE.ConeGeometry(0.4, 1.0, 3);
 }
 
 function intensityToDepth(intensity) {
@@ -111,6 +103,12 @@ function computeTumbleAngle(t) {
   if (t <= 0.5) return 1.0 + ((t - 0.15) / 0.35) * 0.3;
   const returnT = (t - 0.5) / 0.5;
   return 1.3 * (1 - returnT * returnT);
+}
+
+function computeReturnScale(t) {
+  if (t <= 0.5) return 1;
+  const returnT = (t - 0.5) / 0.5;
+  return 1 - returnT * returnT;
 }
 
 const _euler = new THREE.Euler();
@@ -218,9 +216,11 @@ export default class ShardShatter {
     const { levelIndex, slots, origins, velocities, tumbles, radii, t } = state;
     const pool = this._pools[levelIndex];
     const angle = computeTumbleAngle(t);
+    const returnScale = computeReturnScale(t);
     for (let i = 0; i < slots.length; i++) {
       const pos = computeFragmentPosition(origins[i], velocities[i], t);
-      pool.mesh.setMatrixAt(slots[i], buildFragmentMatrix(pos, tumbles[i], angle, radii[i]));
+      const scale = radii[i] * returnScale;
+      pool.mesh.setMatrixAt(slots[i], buildFragmentMatrix(pos, tumbles[i], angle, scale));
     }
     pool.mesh.instanceMatrix.needsUpdate = true;
   }
@@ -243,6 +243,12 @@ export default class ShardShatter {
 
   isShattered(index) {
     return this._shardStates.has(index);
+  }
+
+  getReturnProgress(index) {
+    const state = this._shardStates.get(index);
+    if (!state || state.t <= 0.5) return 0;
+    return (state.t - 0.5) / 0.5;
   }
 
   dispose() {

@@ -393,12 +393,12 @@ describe('PyramidField', () => {
     it('tween skips shattered shards', () => {
       const pf = new PyramidField({ count: 10 });
       pf.setKeyframes([makeSpectrum(0), makeSpectrum(1.0)], 6);
-      pf.onBeat({ isBeat: true, intensity: 1.0, barDuration: 2.0 });
+      pf.onBeat({ isBeat: true, intensity: 1.0, barDuration: 4.0 });
       const shatteredIdx = pf._shards.findIndex((_, i) => pf._shatter.isShattered(i));
       if (shatteredIdx >= 0) {
         expect(pf._shards[shatteredIdx].mesh.visible).toBe(false);
       }
-      pf.update(1.5);
+      pf.update(0.5);
       if (shatteredIdx >= 0 && pf._shatter.isShattered(shatteredIdx)) {
         expect(pf._shards[shatteredIdx].mesh.visible).toBe(false);
       }

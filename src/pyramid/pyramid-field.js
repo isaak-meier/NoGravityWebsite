@@ -96,8 +96,15 @@ export default class PyramidField {
   _restoreShardVisibilityAfterShatter() {
     for (let i = 0; i < this._shards.length; i++) {
       const shard = this._shards[i];
-      if (!this._shatter?.isShattered?.(i) && !shard.mesh.visible) {
+      if (this._shatter.isShattered(i)) {
+        const p = this._shatter.getReturnProgress(i);
+        if (p > 0) {
+          shard.mesh.visible = true;
+          shard.mesh.scale.setScalar(shard.sizeMult * p * p);
+        }
+      } else if (!shard.mesh.visible) {
         shard.mesh.visible = true;
+        shard.mesh.scale.setScalar(shard.sizeMult);
       }
     }
   }
