@@ -87,10 +87,19 @@ export default class PyramidField {
     const r = this._updateBreathing(deltaTime);
     this._updateShardPositions(r, deltaTime);
     if (this._shatter) {
+      this._syncShatterPositions();
       this._shatter.update(deltaTime, this._barDuration);
       this._restoreShardVisibilityAfterShatter();
     }
     this._updateKeyframeTween(deltaTime);
+  }
+
+  _syncShatterPositions() {
+    for (let i = 0; i < this._shards.length; i++) {
+      if (this._shatter.isShattered(i)) {
+        this._shatter.updateShardPosition(i, this._shards[i].mesh.position);
+      }
+    }
   }
 
   _restoreShardVisibilityAfterShatter() {

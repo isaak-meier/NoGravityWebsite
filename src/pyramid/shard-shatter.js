@@ -155,6 +155,8 @@ export default class ShardShatter {
   updateShardPosition(index, worldPosition) {
     const entry = this._shardRegistry.get(index);
     if (entry) entry.worldPosition.copy(worldPosition);
+    const state = this._shardStates.get(index);
+    if (state) state.worldPos.copy(worldPosition);
   }
 
   _claimSlots(levelIndex, count) {
@@ -192,23 +194,25 @@ export default class ShardShatter {
     const depth = intensityToDepth(intensity);
     const levelIndex = depth - 1;
     const fragments = this._subdivide(entry.geometry, depth);
-    const origins = fragments.map(f => f.centroid.clone().add(entry.worldPosition));
+    const centroids = fragments.map(f => f.centroid.clone());
     const velocities = fragments.map(f => generateVelocity(f.centroid, intensity));
     const tumbles = fragments.map(() => generateTumble());
     const radii = fragments.map(f => f.radius);
     const slots = this._claimSlots(levelIndex, fragments.length);
+    const worldPos = entry.worldPosition.clone();
 
-    const state = { depth, levelIndex, t: 0, origins, velocities, tumbles, radii, slots };
+    const state = { depth, levelIndex, t: 0, centroids, worldPos, velocities, tumbles, radii, slots };
     this._shardStates.set(index, state);
     this._applyTransforms(state);
   }
 
   _applyTransforms(state) {
-    const { levelIndex, slots, origins, velocities, tumbles, radii, t } = state;
+    const { levelIndex, slots, centroids, worldPos, velocities, tumbles, radii, t } = state;
     const pool = this._pools[levelIndex];
     const angle = computeTumbleAngle(t);
     for (let i = 0; i < slots.length; i++) {
-      const pos = computeFragmentPosition(origins[i], velocities[i], t);
+      const origin = centroids[i].clone().add(worldPos);
+      const pos = computeFragmentPosition(origin, velocities[i], t);
       pool.mesh.setMatrixAt(slots[i], buildFragmentMatrix(pos, tumbles[i], angle, radii[i]));
     }
     pool.mesh.instanceMatrix.needsUpdate = true;
