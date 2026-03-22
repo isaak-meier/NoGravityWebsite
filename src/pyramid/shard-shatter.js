@@ -80,26 +80,30 @@ function generateTumble() {
   );
 }
 
-function mirrorT(t) {
-  return t <= 0.5 ? t : 1.0 - t;
-}
+const PEAK_VELOCITY_SCALE = 0.35;
 
 function computeFragmentPosition(origin, velocity, t) {
-  const mt = mirrorT(t);
-  if (mt <= 0.15) {
-    const phase = mt / 0.15;
-    const decay = 1 - phase * 0.7;
-    return origin.clone().addScaledVector(velocity, phase * decay);
+  if (t <= 0.5) {
+    if (t <= 0.15) {
+      const phase = t / 0.15;
+      const decay = 1 - phase * 0.7;
+      return origin.clone().addScaledVector(velocity, phase * decay);
+    }
+    const driftT = (t - 0.15) / 0.35;
+    return origin.clone().addScaledVector(velocity, 0.3 + driftT * 0.05);
   }
-  const outwardOffset = 0.3;
-  const driftT = (mt - 0.15) / 0.35;
-  return origin.clone().addScaledVector(velocity, outwardOffset + driftT * 0.05);
+  const u = (t - 0.5) / 0.5;
+  const peak = origin.clone().addScaledVector(velocity, PEAK_VELOCITY_SCALE);
+  return peak.lerp(origin, u);
 }
 
 function computeTumbleAngle(t) {
-  const mt = mirrorT(t);
-  if (mt <= 0.15) return mt / 0.15;
-  return 1.0 + ((mt - 0.15) / 0.35) * 0.3;
+  if (t <= 0.5) {
+    if (t <= 0.15) return t / 0.15;
+    return 1.0 + ((t - 0.15) / 0.35) * 0.3;
+  }
+  const u = (t - 0.5) / 0.5;
+  return 1.3 * (1 - u);
 }
 
 const _euler = new THREE.Euler();
