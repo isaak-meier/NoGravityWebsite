@@ -51,7 +51,7 @@ export default class PyramidField {
       this._addShard(i, count);
     }
     this._shatter = new ShardShatter({
-      maxShards: this.config.maxSimultaneousShatter,
+      maxShards: count,
       material: this.material,
     });
     this._shards.forEach((s, i) => {
