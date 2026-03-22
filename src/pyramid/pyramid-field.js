@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import ShardShatter from "./shard-shatter.js";
 
 const _up = new THREE.Vector3(0, 1, 0);
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
@@ -53,6 +54,14 @@ export default class PyramidField {
     for (let i = 0; i < count; i++) {
       this._addShard(i, count);
     }
+    this._shatter = new ShardShatter({
+      maxShards: this.config.maxSimultaneousShatter,
+      material: this.material,
+    });
+    this._shards.forEach((s, i) => {
+      this._shatter.registerShard(i, this._geometry, s.mesh.position);
+    });
+    this.group.add(this._shatter.group);
   }
 
   _addShard(i, count) {
@@ -81,8 +90,38 @@ export default class PyramidField {
     this.group.rotation.y += deltaTime * this.config.rotationSpeed;
     const r = this._updateBreathing(deltaTime);
     this._updateShardPositions(r, deltaTime);
-    if (this._shatter) this._shatter.update(deltaTime, this._barDuration);
+    if (this._shatter) {
+      this._shatter.update(deltaTime, this._barDuration);
+      this._restoreShardVisibilityAfterShatter();
+    }
     this._updateKeyframeTween(deltaTime);
+  }
+
+  _restoreShardVisibilityAfterShatter() {
+    for (let i = 0; i < this._shards.length; i++) {
+      const shard = this._shards[i];
+      if (!this._shatter?.isShattered?.(i) && !shard.mesh.visible) {
+        shard.mesh.visible = true;
+      }
+    }
+  }
+
+  onBeat({ isBeat, intensity, barDuration }) {
+    if (!isBeat || intensity <= 0 || !this._shatter) return;
+    if (barDuration != null) this._barDuration = barDuration;
+    const maxN = this.config.maxSimultaneousShatter;
+    const eligible = [];
+    for (let i = 0; i < this._shards.length; i++) {
+      if (!this._shatter.isShattered(i)) eligible.push(i);
+    }
+    const n = Math.min(Math.ceil(intensity * maxN), eligible.length);
+    if (n <= 0) return;
+    partialShuffleFirstN(eligible, n);
+    for (let k = 0; k < n; k++) {
+      const i = eligible[k];
+      this._shards[i].mesh.visible = false;
+      this._shatter.triggerShatter(i, intensity);
+    }
   }
 
   _updateBreathing(deltaTime) {
@@ -161,6 +200,11 @@ export default class PyramidField {
   }
 
   _disposeContents() {
+    if (this._shatter) {
+      this._shatter.dispose();
+      if (this._shatter.group) this.group.remove(this._shatter.group);
+      this._shatter = null;
+    }
     for (const shard of this._shards) {
       shard.mesh.parent?.remove(shard.mesh);
     }
@@ -174,7 +218,13 @@ export default class PyramidField {
   dispose() {
     this._disposeContents();
     this.material.dispose();
-    this._shatter?.dispose?.();
+  }
+}
+
+function partialShuffleFirstN(arr, n) {
+  for (let i = 0; i < n; i++) {
+    const j = i + Math.floor(Math.random() * (arr.length - i));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
   }
 }
 

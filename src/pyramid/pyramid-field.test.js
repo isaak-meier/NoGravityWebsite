@@ -2,6 +2,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import * as THREE from 'three';
 import PyramidField from './pyramid-field.js';
+import ShardShatter from './shard-shatter.js';
 
 describe('PyramidField', () => {
   // ── constructor ────────────────────────────────────────────────────────
@@ -72,10 +73,10 @@ describe('PyramidField', () => {
 
     it('adds shard meshes as children of the root group', () => {
       const pf = new PyramidField({ count: 4 });
-      expect(pf.group.children.length).toBe(4);
-      pf.group.children.forEach(child => {
-        expect(child).toBeInstanceOf(THREE.Mesh);
-      });
+      expect(pf.group.children.length).toBe(5);
+      const meshes = pf.group.children.filter(c => c instanceof THREE.Mesh);
+      expect(meshes.length).toBe(4);
+      expect(pf.group.children.some(c => c instanceof THREE.Group)).toBe(true);
     });
 
     it('each shard has sizeMult, driftDir, driftMult, and dir', () => {
@@ -88,11 +89,6 @@ describe('PyramidField', () => {
         expect(typeof s.driftMult).toBe('number');
         expect(s.dir).toBeInstanceOf(THREE.Vector3);
       });
-    });
-
-    it('initializes _shatter as null', () => {
-      const pf = new PyramidField({ count: 1 });
-      expect(pf._shatter).toBeNull();
     });
 
     it('initializes intro state', () => {
@@ -136,9 +132,9 @@ describe('PyramidField', () => {
 
     it('calls _shatter.update when _shatter is set', () => {
       const pf = new PyramidField({ count: 2 });
-      pf._shatter = { update: vi.fn() };
+      const spy = vi.spyOn(pf._shatter, 'update');
       pf.update(0.016);
-      expect(pf._shatter.update).toHaveBeenCalledWith(0.016, pf._barDuration);
+      expect(spy).toHaveBeenCalledWith(0.016, pf._barDuration);
     });
   });
 
@@ -224,9 +220,9 @@ describe('PyramidField', () => {
 
     it('calls _shatter.dispose when _shatter is set', () => {
       const pf = new PyramidField({ count: 2 });
-      pf._shatter = { dispose: vi.fn() };
+      const spy = vi.spyOn(pf._shatter, 'dispose');
       pf.dispose();
-      expect(pf._shatter.dispose).toHaveBeenCalled();
+      expect(spy).toHaveBeenCalled();
     });
 
     it('is safe to call twice', () => {
@@ -275,10 +271,10 @@ describe('PyramidField', () => {
 
     it('removes old meshes from the group', () => {
       const pf = new PyramidField({ count: 3 });
-      expect(pf.group.children.length).toBe(3);
+      expect(pf.group.children.length).toBe(4);
       pf.config.count = 1;
       pf.rebuild();
-      expect(pf.group.children.length).toBe(1);
+      expect(pf.group.children.length).toBe(2);
     });
 
     it('creates a new geometry after rebuild', () => {
@@ -391,6 +387,48 @@ describe('PyramidField', () => {
       const pf = new PyramidField({ count: 5 });
       pf.setKeyframes([makeSpectrum(0.5)], 60);
       expect(pf._tweenDuration).toBe(3);
+    });
+  });
+
+  describe('shatter integration', () => {
+    it('creates a ShardShatter instance internally', () => {
+      const pf = new PyramidField({ count: 10 });
+      expect(pf._shatter).toBeInstanceOf(ShardShatter);
+    });
+
+    it('triggers shatters on beat', () => {
+      const pf = new PyramidField({ count: 10 });
+      pf.onBeat({ isBeat: true, intensity: 0.5, barDuration: 2.0 });
+      const anyShattered = pf._shards.some((_, i) => pf._shatter.isShattered(i));
+      expect(anyShattered).toBe(true);
+    });
+
+    it('does not shatter on non-beat', () => {
+      const pf = new PyramidField({ count: 10 });
+      pf.onBeat({ isBeat: false, intensity: 0.5, barDuration: 2.0 });
+      const anyShattered = pf._shards.some((_, i) => pf._shatter.isShattered(i));
+      expect(anyShattered).toBe(false);
+    });
+
+    it('hides shard mesh when shattered', () => {
+      const pf = new PyramidField({ count: 10 });
+      pf.onBeat({ isBeat: true, intensity: 1.0, barDuration: 2.0 });
+      const hidden = pf._shards.filter(s => !s.mesh.visible);
+      expect(hidden.length).toBeGreaterThan(0);
+    });
+
+    it('restores shard visibility after recombination', () => {
+      const pf = new PyramidField({ count: 10, maxSimultaneousShatter: 10 });
+      pf.onBeat({ isBeat: true, intensity: 0.5, barDuration: 2.0 });
+      pf.update(3.0);
+      pf._shards.forEach(s => expect(s.mesh.visible).toBe(true));
+    });
+
+    it('disposes ShardShatter on dispose', () => {
+      const pf = new PyramidField({ count: 5 });
+      const spy = vi.spyOn(pf._shatter, 'dispose');
+      pf.dispose();
+      expect(spy).toHaveBeenCalled();
     });
   });
 });
