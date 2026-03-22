@@ -38,7 +38,6 @@ export default class PyramidField {
     this._orbitMin = 1.5;
     this._orbitMax = 3;
     this._timeSinceLastShatter = 0;
-    this._lastBeatWasHit = false;
     this._keyframes = null;
     this._tweenTime = 0;
     this._tweenDuration = 1;
@@ -89,7 +88,7 @@ export default class PyramidField {
     const r = this._updateBreathing(deltaTime);
     this._updateShardPositions(r, deltaTime);
     if (this._shatter) {
-      this._tickFallbackShatter(deltaTime);
+      this._tickShatterTimer(deltaTime);
       this._syncShatterPositions();
       this._shatter.update(deltaTime, this._barDuration);
       this._restoreShardVisibilityAfterShatter();
@@ -97,13 +96,12 @@ export default class PyramidField {
     this._updateKeyframeTween(deltaTime);
   }
 
-  _tickFallbackShatter(deltaTime) {
+  _tickShatterTimer(deltaTime) {
     this._timeSinceLastShatter += deltaTime;
     if (this._timeSinceLastShatter >= this._barDuration) {
-      this._timeSinceLastShatter = 0;
+      this._timeSinceLastShatter -= this._barDuration;
       this._triggerShatter(0.5);
     }
-    this._lastBeatWasHit = false;
   }
 
   _syncShatterPositions() {
@@ -124,14 +122,8 @@ export default class PyramidField {
     }
   }
 
-  onBeat({ isBeat, intensity, barDuration }) {
-    if (!this._shatter) return;
+  onBeat({ barDuration }) {
     if (barDuration != null) this._barDuration = barDuration;
-    if (isBeat && intensity > 0) {
-      this._lastBeatWasHit = true;
-      this._timeSinceLastShatter = 0;
-      this._triggerShatter(intensity);
-    }
   }
 
   _triggerShatter(intensity) {

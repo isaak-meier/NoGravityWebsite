@@ -419,32 +419,40 @@ describe('PyramidField', () => {
       expect(pf._shatter).toBeInstanceOf(ShardShatter);
     });
 
-    it('triggers shatters on beat', () => {
+    it('triggers shatters on timer tick', () => {
       const pf = new PyramidField({ count: 10 });
-      pf.onBeat({ isBeat: true, intensity: 0.5, barDuration: 2.0 });
+      pf.update(pf._barDuration - 0.01);
+      pf.update(0.02);
       const anyShattered = pf._shards.some((_, i) => pf._shatter.isShattered(i));
       expect(anyShattered).toBe(true);
     });
 
-    it('does not shatter on non-beat', () => {
+    it('does not shatter before timer expires', () => {
       const pf = new PyramidField({ count: 10 });
-      pf.onBeat({ isBeat: false, intensity: 0.5, barDuration: 2.0 });
+      pf.update(0.1);
       const anyShattered = pf._shards.some((_, i) => pf._shatter.isShattered(i));
       expect(anyShattered).toBe(false);
     });
 
     it('hides shard mesh when shattered', () => {
       const pf = new PyramidField({ count: 10 });
-      pf.onBeat({ isBeat: true, intensity: 1.0, barDuration: 2.0 });
+      pf.update(pf._barDuration - 0.01);
+      pf.update(0.02);
       const hidden = pf._shards.filter(s => !s.mesh.visible);
       expect(hidden.length).toBeGreaterThan(0);
     });
 
     it('restores shard visibility after recombination', () => {
-      const pf = new PyramidField({ count: 10, maxSimultaneousShatter: 10 });
-      pf.onBeat({ isBeat: true, intensity: 0.5, barDuration: 2.0 });
-      pf.update(3.0);
+      const pf = new PyramidField({ count: 10 });
+      pf.update(pf._barDuration + 0.01);
+      pf.update(pf._barDuration + 0.5);
       pf._shards.forEach(s => expect(s.mesh.visible).toBe(true));
+    });
+
+    it('onBeat updates barDuration', () => {
+      const pf = new PyramidField({ count: 10 });
+      pf.onBeat({ barDuration: 1.5 });
+      expect(pf._barDuration).toBe(1.5);
     });
 
     it('disposes ShardShatter on dispose', () => {
