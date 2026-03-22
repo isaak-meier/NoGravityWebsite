@@ -7,8 +7,6 @@ export default class BeatDetector {
     this.barDuration = 2.0;
     this._lowEnergyAvg = 0;
     this._lowEnergyAlpha = 0.05;
-    this._lastBeat = false;
-    this._lastIntensity = 0;
     this._analyser = null;
     this._bpmAnalyzer = null;
     this._bpmLowpass = null;
@@ -54,12 +52,13 @@ export default class BeatDetector {
     const isBeat = energy > threshold && energy > 0.05;
 
     let intensity = 0;
-    if (threshold > 0) {
-      intensity = Math.min(1, Math.max(0, (energy - threshold) / threshold));
+    if (isBeat) {
+      if (threshold > 0) {
+        intensity = Math.min(1, Math.max(0, (energy - threshold) / threshold));
+      } else {
+        intensity = Math.min(1, Math.max(0, energy));
+      }
     }
-
-    this._lastBeat = isBeat;
-    this._lastIntensity = intensity;
 
     return { isBeat, intensity, barDuration: this.barDuration };
   }

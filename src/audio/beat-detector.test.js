@@ -28,8 +28,6 @@ describe("BeatDetector", () => {
       expect(d.barDuration).toBe(2.0);
       expect(d._lowEnergyAvg).toBe(0);
       expect(d._lowEnergyAlpha).toBe(0.05);
-      expect(d._lastBeat).toBe(false);
-      expect(d._lastIntensity).toBe(0);
       expect(d._analyser).toBeNull();
       expect(d._bpmAnalyzer).toBeNull();
     });
@@ -66,6 +64,18 @@ describe("BeatDetector", () => {
       expect(out.isBeat).toBe(false);
       expect(out.intensity).toBe(0);
       expect(out.barDuration).toBe(2.0);
+    });
+
+    it("detects a beat when energy spikes above running average", () => {
+      const d = new BeatDetector();
+      const silent = new Float32Array(256).fill(0);
+      for (let i = 0; i < 20; i++) d.update(silent);
+
+      const loud = new Float32Array(256).fill(0);
+      for (let i = 0; i < 26; i++) loud[i] = 0.8;
+      const out = d.update(loud);
+      expect(out.isBeat).toBe(true);
+      expect(out.intensity).toBeGreaterThan(0);
     });
   });
 
