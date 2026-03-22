@@ -35,7 +35,7 @@ export default class PyramidField {
     this._spectrum = null;
     this._spectrumSmoothing = 0.08;
     this._orbitTime = 0;
-    this._orbitMin = 1;
+    this._orbitMin = 1.5;
     this._orbitMax = 3;
     this._keyframes = null;
     this._tweenTime = 0;
