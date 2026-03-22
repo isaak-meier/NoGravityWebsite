@@ -1,0 +1,22 @@
+---
+description: Keep each function within roughly one editor screen; split long logic into smaller units
+alwaysApply: true
+---
+
+# Function length
+
+- **Do not** add or extend functions beyond roughly **one full screen** of code in the editor at typical font size and zoom (treat **~50 lines** as the practical ceiling, excluding blank lines used only as spacing).
+- When logic would exceed that, **extract** named helpers, private functions, or focused modules; prefer several small, testable pieces over one long block.
+- Applies to **each** function body (including methods, callbacks, and nested `function` declarations)—not only top-level exports.
+
+```javascript
+// ❌ BAD: one huge function doing setup, validation, and rendering
+
+// ✅ GOOD: orchestrator + small helpers
+function doThing(ctx) {
+  const input = validateInput(ctx);
+  return renderResult(transform(input));
+}
+```
+
+When touching existing code that already violates this, **do not** expand the oversized function further; refactor only as needed for the task, or split if the change would push it clearly past one screen.
