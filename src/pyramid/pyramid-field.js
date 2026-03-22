@@ -115,12 +115,11 @@ export default class PyramidField {
   onBeat({ isBeat, intensity, barDuration }) {
     if (!isBeat || intensity <= 0 || !this._shatter) return;
     if (barDuration != null) this._barDuration = barDuration;
-    const maxN = this.config.maxSimultaneousShatter;
     const eligible = [];
     for (let i = 0; i < this._shards.length; i++) {
       if (!this._shatter.isShattered(i)) eligible.push(i);
     }
-    const n = Math.min(Math.ceil(intensity * maxN), eligible.length);
+    const n = Math.min(Math.ceil(this._shards.length / 7), eligible.length);
     if (n <= 0) return;
     partialShuffleFirstN(eligible, n);
     for (let k = 0; k < n; k++) {
