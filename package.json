@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "lil-gui": "^0.21.0",
+    "realtime-bpm-analyzer": "^5.0.1",
     "serve": "^14.2.5",
     "three": "^0.182.0"
   },
