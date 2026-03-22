@@ -35,7 +35,10 @@ function splitTriangleByCentroid(a, b, c) {
 
 function triangleToFragment([v0, v1, v2]) {
   const centroid = new THREE.Vector3().copy(v0).add(v1).add(v2).multiplyScalar(1 / 3);
-  return { centroid, vertices: [v0, v1, v2] };
+  const radius = Math.max(
+    centroid.distanceTo(v0), centroid.distanceTo(v1), centroid.distanceTo(v2),
+  );
+  return { centroid, vertices: [v0, v1, v2], radius };
 }
 
 function subdivideTrianglesOnce(triangles) {
@@ -51,14 +54,14 @@ function subdivideTrianglesOnce(triangles) {
 const FRAGMENTS_PER_LEVEL = [18, 54, 162];
 
 function makeFragmentGeometry() {
-  const s = 0.01;
   const verts = new Float32Array([
-    -s, -s * 0.577, 0,
-     s, -s * 0.577, 0,
-     0,  s * 1.155,  0,
+     0,                1,  0,
+    -Math.sqrt(3) / 2, -0.5, 0,
+     Math.sqrt(3) / 2, -0.5, 0,
   ]);
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+  geo.computeVertexNormals();
   return geo;
 }
 
@@ -113,13 +116,14 @@ function computeTumbleAngle(t) {
 const _euler = new THREE.Euler();
 const _mat4 = new THREE.Matrix4();
 const _quat = new THREE.Quaternion();
-const _scaleOne = new THREE.Vector3(1, 1, 1);
+const _scaleVec = new THREE.Vector3();
 const _zeroMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
 
-function buildFragmentMatrix(position, tumble, tumbleAngle) {
+function buildFragmentMatrix(position, tumble, tumbleAngle, scale) {
   _euler.set(tumble.x * tumbleAngle, tumble.y * tumbleAngle, tumble.z * tumbleAngle);
   _quat.setFromEuler(_euler);
-  _mat4.compose(position, _quat, _scaleOne);
+  _scaleVec.setScalar(scale);
+  _mat4.compose(position, _quat, _scaleVec);
   return _mat4;
 }
 
@@ -156,7 +160,12 @@ export default class ShardShatter {
   }
 
   registerShard(index, geometry, worldPosition) {
-    this._shardRegistry.set(index, { geometry, worldPosition });
+    this._shardRegistry.set(index, { geometry, worldPosition: worldPosition.clone() });
+  }
+
+  updateShardPosition(index, worldPosition) {
+    const entry = this._shardRegistry.get(index);
+    if (entry) entry.worldPosition.copy(worldPosition);
   }
 
   _claimSlots(levelIndex, count) {
@@ -197,20 +206,21 @@ export default class ShardShatter {
     const origins = fragments.map(f => f.centroid.clone().add(entry.worldPosition));
     const velocities = fragments.map(f => generateVelocity(f.centroid, intensity));
     const tumbles = fragments.map(() => generateTumble());
+    const radii = fragments.map(f => f.radius);
     const slots = this._claimSlots(levelIndex, fragments.length);
 
-    const state = { depth, levelIndex, t: 0, origins, velocities, tumbles, slots };
+    const state = { depth, levelIndex, t: 0, origins, velocities, tumbles, radii, slots };
     this._shardStates.set(index, state);
     this._applyTransforms(state);
   }
 
   _applyTransforms(state) {
-    const { levelIndex, slots, origins, velocities, tumbles, t } = state;
+    const { levelIndex, slots, origins, velocities, tumbles, radii, t } = state;
     const pool = this._pools[levelIndex];
     const angle = computeTumbleAngle(t);
     for (let i = 0; i < slots.length; i++) {
       const pos = computeFragmentPosition(origins[i], velocities[i], t);
-      pool.mesh.setMatrixAt(slots[i], buildFragmentMatrix(pos, tumbles[i], angle));
+      pool.mesh.setMatrixAt(slots[i], buildFragmentMatrix(pos, tumbles[i], angle, radii[i]));
     }
     pool.mesh.instanceMatrix.needsUpdate = true;
   }

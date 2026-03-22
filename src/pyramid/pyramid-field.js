@@ -119,6 +119,7 @@ export default class PyramidField {
     partialShuffleFirstN(eligible, n);
     for (let k = 0; k < n; k++) {
       const i = eligible[k];
+      this._shatter.updateShardPosition(i, this._shards[i].mesh.position);
       this._shards[i].mesh.visible = false;
       this._shatter.triggerShatter(i, intensity);
     }
