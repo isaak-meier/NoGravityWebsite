@@ -80,35 +80,26 @@ function generateTumble() {
   );
 }
 
+function mirrorT(t) {
+  return t <= 0.5 ? t : 1.0 - t;
+}
+
 function computeFragmentPosition(origin, velocity, t) {
-  if (t <= 0.15) {
-    const phase = t / 0.15;
+  const mt = mirrorT(t);
+  if (mt <= 0.15) {
+    const phase = mt / 0.15;
     const decay = 1 - phase * 0.7;
     return origin.clone().addScaledVector(velocity, phase * decay);
   }
   const outwardOffset = 0.3;
-  if (t <= 0.5) {
-    const driftT = (t - 0.15) / 0.35;
-    return origin.clone().addScaledVector(velocity, outwardOffset + driftT * 0.05);
-  }
-  const driftEndOffset = outwardOffset + 0.05;
-  const returnT = (t - 0.5) / 0.5;
-  const eased = returnT * returnT;
-  const driftEnd = origin.clone().addScaledVector(velocity, driftEndOffset);
-  return driftEnd.lerp(origin, eased);
+  const driftT = (mt - 0.15) / 0.35;
+  return origin.clone().addScaledVector(velocity, outwardOffset + driftT * 0.05);
 }
 
 function computeTumbleAngle(t) {
-  if (t <= 0.15) return t / 0.15;
-  if (t <= 0.5) return 1.0 + ((t - 0.15) / 0.35) * 0.3;
-  const returnT = (t - 0.5) / 0.5;
-  return 1.3 * (1 - returnT * returnT);
-}
-
-function computeReturnScale(t) {
-  if (t <= 0.5) return 1;
-  const returnT = (t - 0.5) / 0.5;
-  return 1 - returnT * returnT;
+  const mt = mirrorT(t);
+  if (mt <= 0.15) return mt / 0.15;
+  return 1.0 + ((mt - 0.15) / 0.35) * 0.3;
 }
 
 const _euler = new THREE.Euler();
@@ -216,11 +207,9 @@ export default class ShardShatter {
     const { levelIndex, slots, origins, velocities, tumbles, radii, t } = state;
     const pool = this._pools[levelIndex];
     const angle = computeTumbleAngle(t);
-    const returnScale = computeReturnScale(t);
     for (let i = 0; i < slots.length; i++) {
       const pos = computeFragmentPosition(origins[i], velocities[i], t);
-      const scale = radii[i] * returnScale;
-      pool.mesh.setMatrixAt(slots[i], buildFragmentMatrix(pos, tumbles[i], angle, scale));
+      pool.mesh.setMatrixAt(slots[i], buildFragmentMatrix(pos, tumbles[i], angle, radii[i]));
     }
     pool.mesh.instanceMatrix.needsUpdate = true;
   }
