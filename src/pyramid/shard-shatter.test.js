@@ -3,6 +3,8 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import ShardShatter from './shard-shatter.js';
 
+const ID_QUAT = new THREE.Quaternion();
+
 function makeConeGeo() {
   // Task growth (6 → 18 → 54 → 162): three.js ConeGeometry(0.16,0.4,3) is 9 triangles capped;
   // six independent triangles match the spec’s “6 base triangles” for subdivision counts.
@@ -73,7 +75,7 @@ describe('ShardShatter', () => {
       const ss = new ShardShatter({ maxShards: 100, material: mat });
       const geo = makeConeGeo();
       const pos = new THREE.Vector3(1, 2, 3);
-      ss.registerShard(0, geo, pos);
+      ss.registerShard(0, geo, pos, ID_QUAT, 1);
       ss.triggerShatter(0, 0.5);
       expect(ss.isShattered(0)).toBe(true);
     });
@@ -82,7 +84,7 @@ describe('ShardShatter', () => {
       const mat = new THREE.MeshStandardMaterial();
       const ss = new ShardShatter({ maxShards: 100, material: mat });
       const geo = makeConeGeo();
-      ss.registerShard(0, geo, new THREE.Vector3());
+      ss.registerShard(0, geo, new THREE.Vector3(), ID_QUAT, 1);
       expect(ss.isShattered(1)).toBe(false);
     });
   });
@@ -93,11 +95,11 @@ describe('ShardShatter', () => {
       const ss = new ShardShatter({ maxShards: 100, material: mat });
       const geo = makeConeGeo();
       const pos = new THREE.Vector3(4, 5, 6);
-      ss.registerShard(7, geo, pos);
+      ss.registerShard(7, geo, pos, ID_QUAT, 1);
       expect(ss._shardRegistry.has(7)).toBe(true);
       const entry = ss._shardRegistry.get(7);
       expect(entry.geometry).toBe(geo);
-      expect(entry.worldPosition.equals(pos)).toBe(true);
+      expect(entry.position.equals(pos)).toBe(true);
     });
   });
 
@@ -106,7 +108,7 @@ describe('ShardShatter', () => {
       const mat = new THREE.MeshStandardMaterial();
       const ss = new ShardShatter({ maxShards: 5, material: mat });
       const geo = makeConeGeo();
-      ss.registerShard(0, geo, new THREE.Vector3(1, 0, 0));
+      ss.registerShard(0, geo, new THREE.Vector3(1, 0, 0), ID_QUAT, 1);
       ss.triggerShatter(0, 0.2);
       ss.update(1.0, 2.0);
       expect(ss.isShattered(0)).toBe(true);
@@ -116,7 +118,7 @@ describe('ShardShatter', () => {
       const mat = new THREE.MeshStandardMaterial();
       const ss = new ShardShatter({ maxShards: 5, material: mat });
       const geo = makeConeGeo();
-      ss.registerShard(0, geo, new THREE.Vector3(1, 0, 0));
+      ss.registerShard(0, geo, new THREE.Vector3(1, 0, 0), ID_QUAT, 1);
       ss.triggerShatter(0, 0.2);
       ss.update(3.0, 2.0);
       expect(ss.isShattered(0)).toBe(false);
@@ -128,7 +130,7 @@ describe('ShardShatter', () => {
       const mat = new THREE.MeshStandardMaterial();
       const ss = new ShardShatter({ maxShards: 5, material: mat });
       const geo = makeConeGeo();
-      ss.registerShard(0, geo, new THREE.Vector3(1, 0, 0));
+      ss.registerShard(0, geo, new THREE.Vector3(1, 0, 0), ID_QUAT, 1);
       ss.triggerShatter(0, 0.2);
       ss.update(0.5, 2.0);
       ss.triggerShatter(0, 0.8);
@@ -160,7 +162,7 @@ describe('ShardShatter', () => {
       const mat = new THREE.MeshStandardMaterial();
       const ss = new ShardShatter({ maxShards: 5, material: mat });
       const geo = makeConeGeo();
-      ss.registerShard(0, geo, new THREE.Vector3(1, 0, 0));
+      ss.registerShard(0, geo, new THREE.Vector3(1, 0, 0), ID_QUAT, 1);
       ss.triggerShatter(0, 0.5);
       ss.dispose();
       expect(ss.isShattered(0)).toBe(false);

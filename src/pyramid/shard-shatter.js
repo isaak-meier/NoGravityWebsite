@@ -33,12 +33,23 @@ function splitTriangleByCentroid(a, b, c) {
   ];
 }
 
+function triangleNormal(a, b, c) {
+  const e1 = new THREE.Vector3().subVectors(b, a);
+  const e2 = new THREE.Vector3().subVectors(c, a);
+  return e1.cross(e2).normalize();
+}
+
 function triangleToFragment([v0, v1, v2]) {
   const centroid = new THREE.Vector3().copy(v0).add(v1).add(v2).multiplyScalar(1 / 3);
   const radius = Math.max(
     centroid.distanceTo(v0), centroid.distanceTo(v1), centroid.distanceTo(v2),
   );
-  return { centroid, vertices: [v0, v1, v2], radius };
+  const normal = triangleNormal(v0, v1, v2);
+  const quatFace = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    normal,
+  );
+  return { centroid, vertices: [v0, v1, v2], radius, quatFace };
 }
 
 function subdivideTrianglesOnce(triangles) {
@@ -63,13 +74,18 @@ function intensityToDepth(intensity) {
   return 3;
 }
 
-function generateVelocity(centroid, intensity) {
-  const dir = centroid.clone().normalize();
-  const speed = 0.5 + intensity * 2.0;
+function generateWorldVelocity(localCentroid, shardQuat, intensity) {
+  const dir = localCentroid.clone().normalize();
   dir.x += (Math.random() - 0.5) * 0.3;
   dir.y += (Math.random() - 0.5) * 0.3;
   dir.z += (Math.random() - 0.5) * 0.3;
-  return dir.normalize().multiplyScalar(speed);
+  dir.normalize();
+  const speed = 0.5 + intensity * 2.0;
+  return dir.applyQuaternion(shardQuat).multiplyScalar(speed);
+}
+
+function localPointToWorld(local, position, quaternion, scale) {
+  return local.clone().multiplyScalar(scale).applyQuaternion(quaternion).add(position);
 }
 
 function generateTumble() {
@@ -108,15 +124,19 @@ function computeTumbleAngle(t) {
 
 const _euler = new THREE.Euler();
 const _mat4 = new THREE.Matrix4();
-const _quat = new THREE.Quaternion();
+const _quatA = new THREE.Quaternion();
+const _quatB = new THREE.Quaternion();
 const _scaleVec = new THREE.Vector3();
 const _zeroMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
 
-function buildFragmentMatrix(position, tumble, tumbleAngle, scale) {
-  _euler.set(tumble.x * tumbleAngle, tumble.y * tumbleAngle, tumble.z * tumbleAngle);
-  _quat.setFromEuler(_euler);
+function quatFromTumbleVecInto(tumble, angle, target) {
+  _euler.set(tumble.x * angle, tumble.y * angle, tumble.z * angle);
+  return target.setFromEuler(_euler);
+}
+
+function buildFragmentMatrix(position, quaternion, scale) {
   _scaleVec.setScalar(scale);
-  _mat4.compose(position, _quat, _scaleVec);
+  _mat4.compose(position, quaternion, _scaleVec);
   return _mat4;
 }
 
@@ -152,15 +172,28 @@ export default class ShardShatter {
     return triangles.map(triangleToFragment);
   }
 
-  registerShard(index, geometry, worldPosition) {
-    this._shardRegistry.set(index, { geometry, worldPosition: worldPosition.clone() });
+  registerShard(index, geometry, position, quaternion, scale) {
+    this._shardRegistry.set(index, {
+      geometry,
+      position: position.clone(),
+      quaternion: quaternion.clone(),
+      scale,
+    });
   }
 
-  updateShardPosition(index, worldPosition) {
+  syncShardTransform(index, position, quaternion, scale) {
     const entry = this._shardRegistry.get(index);
-    if (entry) entry.worldPosition.copy(worldPosition);
+    if (entry) {
+      entry.position.copy(position);
+      entry.quaternion.copy(quaternion);
+      entry.scale = scale;
+    }
     const state = this._shardStates.get(index);
-    if (state) state.worldPos.copy(worldPosition);
+    if (state) {
+      state.worldPos.copy(position);
+      state.shardQuat.copy(quaternion);
+      state.shardScale = scale;
+    }
   }
 
   _claimSlots(levelIndex, count) {
@@ -199,25 +232,50 @@ export default class ShardShatter {
     const levelIndex = depth - 1;
     const fragments = this._subdivide(entry.geometry, depth);
     const centroids = fragments.map(f => f.centroid.clone());
-    const velocities = fragments.map(f => generateVelocity(f.centroid, intensity));
+    const quatFaces = fragments.map(f => f.quatFace.clone());
+    const velocities = fragments.map(f =>
+      generateWorldVelocity(f.centroid, entry.quaternion, intensity),
+    );
     const tumbles = fragments.map(() => generateTumble());
     const radii = fragments.map(f => f.radius);
     const slots = this._claimSlots(levelIndex, fragments.length);
-    const worldPos = entry.worldPosition.clone();
+    const worldPos = entry.position.clone();
+    const shardQuat = entry.quaternion.clone();
+    const shardScale = entry.scale;
 
-    const state = { depth, levelIndex, t: 0, centroids, worldPos, velocities, tumbles, radii, slots };
+    const state = {
+      depth, levelIndex, t: 0,
+      centroids, quatFaces, worldPos, shardQuat, shardScale,
+      velocities, tumbles, radii, slots,
+    };
     this._shardStates.set(index, state);
     this._applyTransforms(state);
   }
 
   _applyTransforms(state) {
-    const { levelIndex, slots, centroids, worldPos, velocities, tumbles, radii, t } = state;
+    const {
+      levelIndex, slots, centroids, quatFaces, worldPos, shardQuat, shardScale,
+      velocities, tumbles, radii, t,
+    } = state;
     const pool = this._pools[levelIndex];
-    const angle = computeTumbleAngle(t);
+    const ang = computeTumbleAngle(t);
+    const angPeak = computeTumbleAngle(0.5);
     for (let i = 0; i < slots.length; i++) {
-      const origin = centroids[i].clone().add(worldPos);
-      const pos = computeFragmentPosition(origin, velocities[i], t);
-      pool.mesh.setMatrixAt(slots[i], buildFragmentMatrix(pos, tumbles[i], angle, radii[i]));
+      const restPos = localPointToWorld(centroids[i], worldPos, shardQuat, shardScale);
+      _quatA.copy(shardQuat).multiply(quatFaces[i]);
+      const restQuat = _quatA;
+      const pos = computeFragmentPosition(restPos, velocities[i], t);
+      quatFromTumbleVecInto(tumbles[i], ang, _quatB);
+      let q;
+      if (t <= 0.5) {
+        q = restQuat.clone().multiply(_quatB);
+      } else {
+        const u = (t - 0.5) / 0.5;
+        quatFromTumbleVecInto(tumbles[i], angPeak, _quatB);
+        const qAtPeak = restQuat.clone().multiply(_quatB);
+        q = qAtPeak.slerp(restQuat, u);
+      }
+      pool.mesh.setMatrixAt(slots[i], buildFragmentMatrix(pos, q, radii[i]));
     }
     pool.mesh.instanceMatrix.needsUpdate = true;
   }

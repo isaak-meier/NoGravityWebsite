@@ -56,7 +56,9 @@ export default class PyramidField {
       material: this.material,
     });
     this._shards.forEach((s, i) => {
-      this._shatter.registerShard(i, this._geometry, s.mesh.position);
+      this._shatter.registerShard(
+        i, this._geometry, s.mesh.position, s.mesh.quaternion, s.mesh.scale.x,
+      );
     });
     this.group.add(this._shatter.group);
   }
@@ -107,7 +109,8 @@ export default class PyramidField {
   _syncShatterPositions() {
     for (let i = 0; i < this._shards.length; i++) {
       if (this._shatter.isShattered(i)) {
-        this._shatter.updateShardPosition(i, this._shards[i].mesh.position);
+        const m = this._shards[i].mesh;
+        this._shatter.syncShardTransform(i, m.position, m.quaternion, m.scale.x);
       }
     }
   }
@@ -137,11 +140,11 @@ export default class PyramidField {
     const budget = Math.max(0, half - shatteredCount);
     const n = Math.min(Math.ceil(this._shards.length / 7), eligible.length, budget);
     if (n <= 0) return;
-    partialShuffleFirstN(eligible, n);
-    for (let k = 0; k < n; k++) {
-      const i = eligible[k];
-      this._shatter.updateShardPosition(i, this._shards[i].mesh.position);
-      this._shards[i].mesh.visible = false;
+    const picked = pickEvenlySpacedIndices(eligible, n);
+    for (const i of picked) {
+      const m = this._shards[i].mesh;
+      this._shatter.syncShardTransform(i, m.position, m.quaternion, m.scale.x);
+      m.visible = false;
       this._shatter.triggerShatter(i, intensity);
     }
   }
@@ -250,11 +253,17 @@ export default class PyramidField {
   }
 }
 
-function partialShuffleFirstN(arr, n) {
-  for (let i = 0; i < n; i++) {
-    const j = i + Math.floor(Math.random() * (arr.length - i));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
+function pickEvenlySpacedIndices(eligible, n) {
+  const sorted = [...eligible].sort((a, b) => a - b);
+  const m = sorted.length;
+  const take = Math.min(n, m);
+  if (take <= 0) return [];
+  const out = [];
+  for (let i = 0; i < take; i++) {
+    const slot = Math.floor((i + 0.5) * m / take);
+    out.push(sorted[slot]);
   }
+  return out;
 }
 
 function bandEnergyForShard(shardIndex, shardCount, spectrum, len) {
