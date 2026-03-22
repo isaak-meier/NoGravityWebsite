@@ -20,12 +20,14 @@ Replace the current cluster-based system (groups of cones arranged in 8 bands pe
 
 A new `BeatDetector` module in `src/audio/beat-detector.js` using the `realtime-bpm-analyzer` npm package.
 
-- **BPM detection**: `realtime-bpm-analyzer` wired into the existing Web Audio API pipeline (connects to the `AnalyserNode` already in place for FFT). Provides real-time BPM candidates.
+- **BPM detection**: `realtime-bpm-analyzer` (ESM-compatible, verify AudioWorklet vs ScriptProcessor path for the project's `serve`-based setup) wired into the existing Web Audio API pipeline. Provides real-time BPM candidates.
 - **Beat onset detection**: lightweight energy-threshold check (~10 lines) on low-frequency FFT bins (~60–200 Hz). Compares current frame's low-end energy to a running average. When the energy exceeds the average by a configurable threshold, a beat is detected.
 - **Beat intensity**: normalized 0–1 value based on how far the onset exceeded the threshold. Drives fracture depth.
 - **Bar duration**: derived as `(60 / BPM) * 4` seconds (assumes 4/4 time).
-- **API**: exposes `{ isBeat: boolean, intensity: number, barDuration: number }` polled each frame.
-- **GUI**: sensitivity threshold slider for tuning what counts as a beat.
+- **Fallback values**: until a valid BPM is detected (or when no audio is playing), `barDuration` defaults to 2.0 seconds, `isBeat` returns `false`, and `intensity` returns `0`. This prevents division-by-zero or NaN in the recombination timer.
+- **Audio source changes**: BeatDetector exposes a `setAnalyser(analyserNode)` method. When `three-scene.js` switches audio sources (via `loadAudioSource` or `startLiveAudio`), it calls `setAnalyser` with the new node. BPM history resets on source change.
+- **API**: exposes `{ isBeat: boolean, intensity: number, barDuration: number }` polled each frame via an `update(fftData)` method.
+- **GUI**: sensitivity threshold slider under a new "Beat Detection" GUI folder.
 - **Location**: `src/audio/beat-detector.js`, alongside existing `src/audio/audio-fft.js`.
 
 ## 3. Fracture Mechanic
@@ -34,25 +36,39 @@ Runtime geometry subdivision managed by a new `ShardShatter` engine in `src/pyra
 
 ### Subdivision
 
-When a beat triggers a shatter, the shard's cone geometry is subdivided by splitting each triangle face along edge midpoints into smaller triangles, then separating them into individual fragments.
+When a beat triggers a shatter, the shard's cone geometry is subdivided using centroid subdivision: each triangle face is split into 3 sub-triangles by connecting the centroid to each vertex. This gives a consistent 3x growth per pass.
+
+A `ConeGeometry(r, h, 3)` has 6 base triangles (3 side faces + 3 bottom cap faces).
 
 - **Depth scales with intensity**:
-  - Intensity 0–0.33 → 1 pass (~6 fragments per shard)
-  - Intensity 0.33–0.66 → 2 passes (~18 fragments)
-  - Intensity 0.66–1.0 → 3 passes (~40 fragments)
+  - Intensity 0–0.33 → 1 pass (6 × 3 = 18 fragments per shard)
+  - Intensity 0.33–0.66 → 2 passes (6 × 9 = 54 fragments)
+  - Intensity 0.66–1.0 → 3 passes (6 × 27 = 162 fragments)
 - Each fragment gets a randomized outward velocity plus slight tumble rotation.
+
+### Shard Selection
+
+On each beat, shards are selected for shattering:
+- Only shards not currently mid-shatter are eligible.
+- N shards are sampled uniformly at random, where `N = ceil(intensity * maxSimultaneousShatter)`.
+- Effective cap is `Math.min(maxSimultaneousShatter, count)` to handle low shard counts.
+
+### Visibility
+
+At shatter start (t = 0): the original shard mesh is hidden (`visible = false`) and its fragments become visible. At recombination end (t = 1): fragments are hidden and the original shard reappears.
 
 ### Performance
 
-- **Simultaneous shatter cap**: max ~15 shards mid-shatter at once (randomly selected from beat-affected shards). Worst case: 15 × 40 = 600 fragment instances.
-- **InstancedMesh batching**: all active fragments share a single `InstancedMesh` per subdivision depth level. 3 draw calls instead of hundreds. Instance transforms updated each frame via the instance matrix buffer.
-- **Object pool**: fragment instance slots pre-allocated at build time (sized for max simultaneous shatter cap). Slots claimed on beat, returned on recombination. Zero runtime allocation.
+- **Simultaneous shatter cap**: max ~15 shards mid-shatter at once. Worst case at depth 3: 15 × 162 = 2,430 fragment instances.
+- **InstancedMesh batching**: all active fragments share a single `InstancedMesh` per subdivision depth level. 3 draw calls instead of thousands. Instance transforms updated each frame via the instance matrix buffer.
+- **Object pool**: fragment instance slots pre-allocated at build time, sized for worst-case (maxSimultaneousShatter × 162). Slots claimed on beat, returned on recombination. Zero runtime allocation.
 
 ### API
 
 - `triggerShatter(shardIndex, intensity)` — initiate a shatter on a specific shard.
 - `update(deltaTime, barDuration)` — advance all active shatter/recombination animations.
 - `isShattered(shardIndex)` — query whether a shard is currently mid-shatter.
+- `dispose()` — release all InstancedMesh objects, pooled geometries, and fragment state. Called by `PyramidField.dispose()`.
 
 ## 4. Recombination Animation
 
@@ -77,14 +93,14 @@ If a new beat lands while a shard is mid-recombination:
 - Fragments shatter again from their current positions (no snap-home).
 - `t` timer resets; current positions become new shatter origin.
 - Fresh outward velocities added.
-- If not already at max depth and new intensity warrants it, existing fragments subdivide further.
+- The new beat's intensity determines the depth level. Old fragment slots are freed first, then new slots are allocated at the new depth. This is a full reset to the new depth (not additive subdivision), which keeps pool accounting simple and bounded.
 
 ## 5. Spectrum Reactivity & Keyframes (Adapted)
 
 ### Spectrum Reactivity
 
 - Each shard is assigned a frequency band based on its Fibonacci index (low index → low frequency, high index → high frequency).
-- Energy in the assigned band drives a gentle scale pulse and slight positional push outward from planet center.
+- Energy in the assigned band drives a gentle scale pulse (`1.0 + energy * 0.08`) and slight positional push outward from planet center (`energy * size * 0.3`).
 - Much subtler than the current behavior — the shatter mechanic handles dramatic moments.
 
 ### Keyframe Tweening
@@ -106,11 +122,11 @@ Main orchestrator. Owns the shard array, Fibonacci layout, orbit breathing, slow
 
 ### `src/pyramid/shard-shatter.js` (new)
 
-Fracture and recombination engine. Handles geometry subdivision, InstancedMesh pool, per-shard shatter state (t timer, phase, velocity, depth), and return animation.
+Fracture and recombination engine. Handles geometry subdivision, InstancedMesh pool, per-shard shatter state (t timer, phase, velocity, depth), and return animation. Fragments share the same `MeshStandardMaterial` as intact shards.
 
 ### `src/audio/beat-detector.js` (new)
 
-Thin wrapper around `realtime-bpm-analyzer` plus onset energy check. Takes an `AnalyserNode`, exposes `{ isBeat, intensity, barDuration }`. Owns the sensitivity threshold. Instantiated in `three-scene.js` (where audio nodes live) and passed into `PyramidField`.
+Thin wrapper around `realtime-bpm-analyzer` plus onset energy check. Constructor takes an `AnalyserNode`; exposes `setAnalyser(node)` for audio source changes. Provides `{ isBeat, intensity, barDuration }` via `update(fftData)`. Owns the sensitivity threshold. Instantiated in `three-scene.js` and passed to `PyramidField` via constructor injection.
 
 ## 7. Config Changes
 
@@ -121,7 +137,7 @@ Existing config properties that stay:
 
 Modified:
 - `shardSpin` → renamed to `shardDrift`, default much lower (~0.05 vs current 0.25)
-- `size` stays but now applies per-shard with ±30% random variation
+- `size` stays but now applies per-shard with ±30% random variation. Size variation is applied via the instance matrix scale component, not per-shard geometry.
 
 New:
 - `maxSimultaneousShatter` (default 15)
