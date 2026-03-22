@@ -37,6 +37,8 @@ export default class PyramidField {
     this._orbitTime = 0;
     this._orbitMin = 1.5;
     this._orbitMax = 3;
+    this._timeSinceLastShatter = 0;
+    this._lastBeatWasHit = false;
     this._keyframes = null;
     this._tweenTime = 0;
     this._tweenDuration = 1;
@@ -87,11 +89,21 @@ export default class PyramidField {
     const r = this._updateBreathing(deltaTime);
     this._updateShardPositions(r, deltaTime);
     if (this._shatter) {
+      this._tickFallbackShatter(deltaTime);
       this._syncShatterPositions();
       this._shatter.update(deltaTime, this._barDuration);
       this._restoreShardVisibilityAfterShatter();
     }
     this._updateKeyframeTween(deltaTime);
+  }
+
+  _tickFallbackShatter(deltaTime) {
+    this._timeSinceLastShatter += deltaTime;
+    if (this._timeSinceLastShatter >= this._barDuration) {
+      this._timeSinceLastShatter = 0;
+      this._triggerShatter(0.5);
+    }
+    this._lastBeatWasHit = false;
   }
 
   _syncShatterPositions() {
@@ -113,13 +125,25 @@ export default class PyramidField {
   }
 
   onBeat({ isBeat, intensity, barDuration }) {
-    if (!isBeat || intensity <= 0 || !this._shatter) return;
+    if (!this._shatter) return;
     if (barDuration != null) this._barDuration = barDuration;
+    if (isBeat && intensity > 0) {
+      this._lastBeatWasHit = true;
+      this._timeSinceLastShatter = 0;
+      this._triggerShatter(intensity);
+    }
+  }
+
+  _triggerShatter(intensity) {
+    const half = Math.floor(this._shards.length / 2);
+    let shatteredCount = 0;
     const eligible = [];
     for (let i = 0; i < this._shards.length; i++) {
-      if (!this._shatter.isShattered(i)) eligible.push(i);
+      if (this._shatter.isShattered(i)) shatteredCount++;
+      else eligible.push(i);
     }
-    const n = Math.min(Math.ceil(this._shards.length / 7), eligible.length);
+    const budget = Math.max(0, half - shatteredCount);
+    const n = Math.min(Math.ceil(this._shards.length / 7), eligible.length, budget);
     if (n <= 0) return;
     partialShuffleFirstN(eligible, n);
     for (let k = 0; k < n; k++) {
