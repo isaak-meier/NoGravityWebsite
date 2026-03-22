@@ -151,6 +151,19 @@ export default class PyramidField {
   _updateKeyframeTween(deltaTime) {
     if (!this._keyframes || this._keyframes.length < 2) return;
     this._tweenTime += deltaTime * this.config.tweenSpeed;
+    const total = this._keyframes.length - 1;
+    const rawIdx = this._tweenTime / this._tweenDuration;
+    const idx = Math.min(Math.floor(rawIdx), total - 1);
+    const frac = Math.min(rawIdx - idx, 1);
+    const from = this._keyframes[idx];
+    const to = this._keyframes[Math.min(idx + 1, total)];
+    const { size } = this.config;
+    const lerp = this._spectrumSmoothing;
+    for (let i = 0; i < this._shards.length; i++) {
+      if (this._shatter?.isShattered?.(i)) continue;
+      const energy = from[i] + (to[i] - from[i]) * frac;
+      applySpectrumToShard(this._shards[i], energy, size, lerp);
+    }
   }
 
   applySpectrum(spectrum) {
@@ -177,7 +190,10 @@ export default class PyramidField {
     } else {
       this._tweenDuration = 3;
     }
-    this._keyframes = spectra.map(s => s);
+    const shardCount = this._shards.length;
+    this._keyframes = spectra.map(s =>
+      buildPerShardEnergies(shardCount, s),
+    );
     this._tweenTime = 0;
   }
 
@@ -236,6 +252,15 @@ function bandEnergyForShard(shardIndex, shardCount, spectrum, len) {
   let sum = 0;
   for (let j = start; j < end && j < len; j++) sum += spectrum[j];
   return sum / Math.max(1, end - start);
+}
+
+function buildPerShardEnergies(shardCount, spectrum) {
+  const len = spectrum.length;
+  const energies = new Float32Array(shardCount);
+  for (let i = 0; i < shardCount; i++) {
+    energies[i] = bandEnergyForShard(i, shardCount, spectrum, len);
+  }
+  return energies;
 }
 
 function applySpectrumToShard(shard, energy, size, lerp) {

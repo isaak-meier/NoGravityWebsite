@@ -342,11 +342,13 @@ describe('PyramidField', () => {
       return new Float32Array(length).fill(value);
     }
 
-    it('stores keyframes when given valid spectra', () => {
+    it('stores per-shard energy keyframes when given valid spectra', () => {
       const pf = new PyramidField({ count: 5 });
       pf.setKeyframes([makeSpectrum(0.5), makeSpectrum(1.0)]);
       expect(pf._keyframes).not.toBeNull();
       expect(pf._keyframes.length).toBe(2);
+      expect(pf._keyframes[0].length).toBe(5);
+      expect(pf._keyframes[1].length).toBe(5);
     });
 
     it('clears keyframes when given null', () => {
@@ -387,6 +389,28 @@ describe('PyramidField', () => {
       const pf = new PyramidField({ count: 5 });
       pf.setKeyframes([makeSpectrum(0.5)], 60);
       expect(pf._tweenDuration).toBe(3);
+    });
+
+    it('tween skips shattered shards', () => {
+      const pf = new PyramidField({ count: 10 });
+      pf.setKeyframes([makeSpectrum(0), makeSpectrum(1.0)], 6);
+      pf.onBeat({ isBeat: true, intensity: 1.0, barDuration: 2.0 });
+      const shatteredIdx = pf._shards.findIndex((_, i) => pf._shatter.isShattered(i));
+      if (shatteredIdx >= 0) {
+        expect(pf._shards[shatteredIdx].mesh.visible).toBe(false);
+      }
+      pf.update(1.5);
+      if (shatteredIdx >= 0 && pf._shatter.isShattered(shatteredIdx)) {
+        expect(pf._shards[shatteredIdx].mesh.visible).toBe(false);
+      }
+    });
+
+    it('applies tween energy to non-shattered shards', () => {
+      const pf = new PyramidField({ count: 5 });
+      pf.setKeyframes([makeSpectrum(0), makeSpectrum(1.0)], 10);
+      const scaleBefore = pf._shards[0].mesh.scale.x;
+      pf.update(1.0);
+      expect(pf._shards[0].mesh.scale.x).not.toBeCloseTo(scaleBefore, 3);
     });
   });
 
