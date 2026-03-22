@@ -37,9 +37,6 @@ export default class PyramidField {
     this._orbitTime = 0;
     this._orbitMin = 1;
     this._orbitMax = 3;
-    this._introRadius = 80;
-    this._introActive = true;
-    this._introLerpSpeed = 2;
     this._keyframes = null;
     this._tweenTime = 0;
     this._tweenDuration = 1;
@@ -48,7 +45,6 @@ export default class PyramidField {
 
   rebuild() {
     this._disposeContents();
-    this._introActive = true;
     const { count, size } = this.config;
     this._geometry = new THREE.ConeGeometry(size * 0.4, size, 3);
     for (let i = 0; i < count; i++) {
@@ -128,16 +124,7 @@ export default class PyramidField {
   _updateBreathing(deltaTime) {
     this._orbitTime += deltaTime * this.config.orbitPulseSpeed;
     const t01 = (Math.sin(this._orbitTime) + 1) * 0.5;
-    const targetR = this._orbitMin + (this._orbitMax - this._orbitMin) * t01;
-    if (this._introActive) {
-      this._introRadius +=
-        (targetR - this._introRadius) * this._introLerpSpeed * deltaTime;
-      if (Math.abs(this._introRadius - targetR) < 0.05) {
-        this._introActive = false;
-      }
-      return this._introRadius;
-    }
-    return targetR;
+    return this._orbitMin + (this._orbitMax - this._orbitMin) * t01;
   }
 
   _updateShardPositions(r, deltaTime) {

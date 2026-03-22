@@ -802,50 +802,37 @@ function initScene() {
   scene.add(comet.group);
   if (gui) comet.setupGUI(gui);
 
-  // Pyramids are deferred until a valid audio source loads.
-  const worlds = solarSystem.planets.map(() => ({ pyramidField: null }));
+  const pyramidField = new PyramidField();
+  sphere.add(pyramidField.group);
+  if (gui) pyramidField.setupGUI(gui);
+
   const SNAPSHOT_COUNT = 5;
   const SNAPSHOT_INTERVAL = 8;
   let snapshotState = null;
-
-  function ensurePyramids() {
-    const world = worlds[0];
-    if (!world.pyramidField) {
-      world.pyramidField = new PyramidField();
-      sphere.add(world.pyramidField.group);
-      if (gui) world.pyramidField.setupGUI(gui);
-    }
-  }
 
   const beatDetector = new BeatDetector();
   if (gui) beatDetector.setupGUI(gui);
 
   const audioState = createAudioState();
   const onSpectrum = (spectrum) => {
-    // Live audio: apply spectrum to pyramids in real-time every frame
     if (audioState._liveStream) {
-      ensurePyramids();
-      worlds[0].pyramidField.setKeyframes(null); // disable keyframe tweening
-      worlds[0].pyramidField.applySpectrum(spectrum);
+      pyramidField.setKeyframes(null);
+      pyramidField.applySpectrum(spectrum);
     } else if (snapshotState && snapshotState.snapshots.length < SNAPSHOT_COUNT) {
-      // File playback: collect a few snapshots then switch to keyframe tweening
       if (spectrum.some((v) => v > 0)) {
         snapshotState.frameCount++;
         if (snapshotState.frameCount === 1) {
-          ensurePyramids();
-          worlds[0].pyramidField.applySpectrum(spectrum);
+          pyramidField.applySpectrum(spectrum);
           snapshotState.snapshots.push(new Float32Array(spectrum));
         } else if (snapshotState.frameCount % SNAPSHOT_INTERVAL === 0) {
-          ensurePyramids();
           snapshotState.snapshots.push(new Float32Array(spectrum));
           if (snapshotState.snapshots.length === SNAPSHOT_COUNT) {
             const duration = audioState.audioEl ? audioState.audioEl.duration : 0;
-            worlds[0].pyramidField.setKeyframes(snapshotState.snapshots, duration);
+            pyramidField.setKeyframes(snapshotState.snapshots, duration);
           }
         }
       }
     }
-    // Drive comet brightness from overall loudness
     const loudness = spectrum.reduce((a, v) => a + v, 0) / spectrum.length;
     comet.setLoudness(loudness);
 
@@ -854,9 +841,7 @@ function initScene() {
     });
 
     const beatInfo = beatDetector.update(spectrum);
-    if (worlds[0].pyramidField) {
-      worlds[0].pyramidField.onBeat(beatInfo);
-    }
+    pyramidField.onBeat(beatInfo);
   };
 
   setupPlanetClickHandler(renderer, camera, sphere, audioState);
@@ -889,11 +874,7 @@ function initScene() {
     (camCtrl.followPlanet ? camCtrl.followPlanet.mesh : sphere).getWorldPosition(_cometAnchor);
     comet.setAnchor(_cometAnchor);
     comet.update(t);
-    if (worlds) {
-      for (const w of worlds) {
-        if (w.pyramidField) w.pyramidField.update(t);
-      }
-    }
+    pyramidField.update(t);
     camCtrl.update(t);
     composer.render();
   })();

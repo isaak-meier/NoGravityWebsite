@@ -91,10 +91,9 @@ describe('PyramidField', () => {
       });
     });
 
-    it('initializes intro state', () => {
+    it('initializes orbit state', () => {
       const pf = new PyramidField({ count: 1 });
-      expect(pf._introActive).toBe(true);
-      expect(pf._introRadius).toBe(80);
+      expect(pf._orbitTime).toBe(0);
     });
   });
 
