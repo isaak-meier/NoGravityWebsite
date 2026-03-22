@@ -100,4 +100,70 @@ describe('ShardShatter', () => {
       expect(entry.worldPosition.equals(pos)).toBe(true);
     });
   });
+
+  describe('update', () => {
+    it('advances t toward 1.0 over barDuration', () => {
+      const mat = new THREE.MeshStandardMaterial();
+      const ss = new ShardShatter({ maxShards: 5, material: mat });
+      const geo = makeConeGeo();
+      ss.registerShard(0, geo, new THREE.Vector3(1, 0, 0));
+      ss.triggerShatter(0, 0.2);
+      ss.update(1.0, 2.0);
+      expect(ss.isShattered(0)).toBe(true);
+    });
+
+    it('completes recombination when t >= 1.0', () => {
+      const mat = new THREE.MeshStandardMaterial();
+      const ss = new ShardShatter({ maxShards: 5, material: mat });
+      const geo = makeConeGeo();
+      ss.registerShard(0, geo, new THREE.Vector3(1, 0, 0));
+      ss.triggerShatter(0, 0.2);
+      ss.update(3.0, 2.0);
+      expect(ss.isShattered(0)).toBe(false);
+    });
+  });
+
+  describe('re-shatter', () => {
+    it('resets t to 0 when re-shattered mid-recombination', () => {
+      const mat = new THREE.MeshStandardMaterial();
+      const ss = new ShardShatter({ maxShards: 5, material: mat });
+      const geo = makeConeGeo();
+      ss.registerShard(0, geo, new THREE.Vector3(1, 0, 0));
+      ss.triggerShatter(0, 0.2);
+      ss.update(0.5, 2.0);
+      ss.triggerShatter(0, 0.8);
+      expect(ss.isShattered(0)).toBe(true);
+      ss.update(2.5, 2.0);
+      expect(ss.isShattered(0)).toBe(false);
+    });
+  });
+
+  describe('InstancedMesh pool', () => {
+    it('exposes a group containing InstancedMesh children', () => {
+      const mat = new THREE.MeshStandardMaterial();
+      const ss = new ShardShatter({ maxShards: 5, material: mat });
+      expect(ss.group).toBeInstanceOf(THREE.Group);
+      const meshes = ss.group.children.filter(c => c.isInstancedMesh);
+      expect(meshes.length).toBeGreaterThan(0);
+    });
+
+    it('pre-allocates instance slots for worst-case capacity', () => {
+      const mat = new THREE.MeshStandardMaterial();
+      const ss = new ShardShatter({ maxShards: 5, material: mat });
+      const meshes = ss.group.children.filter(c => c.isInstancedMesh);
+      expect(meshes.length).toBe(3);
+    });
+  });
+
+  describe('dispose', () => {
+    it('clears all shatter states', () => {
+      const mat = new THREE.MeshStandardMaterial();
+      const ss = new ShardShatter({ maxShards: 5, material: mat });
+      const geo = makeConeGeo();
+      ss.registerShard(0, geo, new THREE.Vector3(1, 0, 0));
+      ss.triggerShatter(0, 0.5);
+      ss.dispose();
+      expect(ss.isShattered(0)).toBe(false);
+    });
+  });
 });
