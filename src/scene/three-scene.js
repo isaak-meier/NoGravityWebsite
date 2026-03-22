@@ -18,6 +18,7 @@ import SolarSystem from "./solar-system.js";
 import CameraController from "./camera-controller.js";
 import AudioManager from "./audio-manager.js";
 import Comet from "./comet.js";
+import BeatDetector from "../audio/beat-detector.js";
 
 async function cleanupDevServiceWorkers() {
   if (typeof window === "undefined") return;
@@ -589,13 +590,14 @@ function createAudioElement(src) {
   return el;
 }
 
-async function loadAudioSource(source, audioState, onSpectrum, onNewSource) {
+async function loadAudioSource(source, audioState, onSpectrum, onNewSource, beatDetector) {
   stopAudio(audioState);
   const url = source instanceof Blob ? URL.createObjectURL(source) : source;
   audioState.audioEl = createAudioElement(url);
   const fft = new AudioFFT({ audioElement: audioState.audioEl, context: null });
   try { await fft.load(); } catch (err) { console.warn("AudioFFT.load() failed:", err); }
   audioState.fft = fft;
+  if (beatDetector && fft.analyser) beatDetector.setAnalyser(fft.analyser);
   if (onNewSource) onNewSource();
   const stream = fft.createStream();
   stream.onData(onSpectrum);
@@ -619,7 +621,7 @@ function setupPlanetClickHandler(renderer, camera, sphere, audioState) {
 
 // --- Live audio helpers ---------------------------------------------------
 
-async function startLiveAudio(mode, audioState, onSpectrum, onNewSource) {
+async function startLiveAudio(mode, audioState, onSpectrum, onNewSource, beatDetector) {
   const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
   stopAudio(audioState);
   audioState._liveStream = mediaStream;
@@ -628,6 +630,7 @@ async function startLiveAudio(mode, audioState, onSpectrum, onNewSource) {
   const fft = new AudioFFT({ context: null });
   fft.loadMediaStream(mediaStream);
   audioState.fft = fft;
+  if (beatDetector && fft.analyser) beatDetector.setAnalyser(fft.analyser);
   if (onNewSource) onNewSource();
 
   const stream = fft.createStream();
@@ -684,7 +687,7 @@ function createSongPickerDOM(isMobile) {
 
 // --- Google Drive song picker ---------------------------------------------
 
-function setupSongPicker(container, audioState, onSpectrum, onNewSource, isMobile) {
+function setupSongPicker(container, audioState, onSpectrum, onNewSource, isMobile, beatDetector) {
   initializeGoogleAuth();
   const dom = createSongPickerDOM(isMobile);
   container.appendChild(dom.wrapper);
@@ -705,7 +708,7 @@ function setupSongPicker(container, audioState, onSpectrum, onNewSource, isMobil
     }
     deactivateLive();
     try {
-      await startLiveAudio("mic", audioState, onSpectrum, onNewSource);
+      await startLiveAudio("mic", audioState, onSpectrum, onNewSource, beatDetector);
       activeLiveMode = "mic";
       dom.micBtn.style.cssText = dom.activeBtnStyle;
     } catch (err) {
@@ -719,7 +722,7 @@ function setupSongPicker(container, audioState, onSpectrum, onNewSource, isMobil
     if (!fileId || !driveState.provider) return;
     deactivateLive();
     const blob = await driveState.provider.fetchFileBlob(fileId);
-    await loadAudioSource(blob, audioState, onSpectrum, onNewSource);
+    await loadAudioSource(blob, audioState, onSpectrum, onNewSource, beatDetector);
     try {
       // Resume AudioContext (browsers suspend it until user gesture)
       if (audioState.fft && audioState.fft.context && audioState.fft.context.state === "suspended") {
@@ -814,6 +817,9 @@ function initScene() {
     }
   }
 
+  const beatDetector = new BeatDetector();
+  if (gui) beatDetector.setupGUI(gui);
+
   const audioState = createAudioState();
   const onSpectrum = (spectrum) => {
     // Live audio: apply spectrum to pyramids in real-time every frame
@@ -846,12 +852,17 @@ function initScene() {
     applySpectrumToParams(spectrum, {
       planetParams, radiusCtrl, bloomPass, material, sphere, baseRadius,
     });
+
+    const beatInfo = beatDetector.update(spectrum);
+    if (worlds[0].pyramidField) {
+      worlds[0].pyramidField.onBeat(beatInfo);
+    }
   };
 
   setupPlanetClickHandler(renderer, camera, sphere, audioState);
   const pickerWrapper = setupSongPicker(container, audioState, onSpectrum, () => {
     snapshotState = { snapshots: [], frameCount: 0 };
-  }, isMobile);
+  }, isMobile, beatDetector);
   if (gui) pickerWrapper.appendChild(gui.domElement);
 
   // Camera controller via CameraController class
