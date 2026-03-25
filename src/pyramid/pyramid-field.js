@@ -1,12 +1,51 @@
 import * as THREE from "three";
+import ShardShatter, {
+  FRAGMENTS_PER_LEVEL,
+  intensityToDepth,
+} from "./shard-shatter.js";
+import FragmentPatternCoordinator from "./fragment-pattern-coordinator.js";
 
-// Number of frequency bands each pyramid cluster is split into.
-// Lower bands → larger triangles near the base, higher bands → smaller ones at the tip.
-const BANDS = 8;
+const _up = new THREE.Vector3(0, 1, 0);
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+/** Bars between all-shard waves; one shatter animation lasts this many bars. */
+export const SHATTER_CYCLE_BARS = 9;
 
 export default class PyramidField {
-  constructor({ count = 12, orbitRadius = 1.46, size = 0.40595, rotationSpeed = 0.15, shardSpin = 0.25, tweenSpeed = 1.0, orbitPulseSpeed = 0.3 } = {}) {
-    this.config = { count, orbitRadius, size, rotationSpeed, shardSpin, tweenSpeed, orbitPulseSpeed };
+  constructor({
+    count = 60,
+    orbitRadius = 1.46,
+    size = 0.40595,
+    rotationSpeed = 0.15,
+    shardDrift = 0.05,
+    tweenSpeed = 1.0,
+    orbitPulseSpeed = 0.3,
+    maxSimultaneousShatter = 15,
+    beatSensitivity = 1.0,
+    /** 0 = pyramids only (no shatter wave); 1 = max fragments + expansion. */
+    shatterAmount = 1,
+    /** 0 sphere shell · 1 Saturn rings · 2 galaxy swirls */
+    patternMode = 0,
+    pattern = {},
+  } = {}) {
+    this.config = {
+      count, orbitRadius, size, rotationSpeed, shardDrift,
+      tweenSpeed, orbitPulseSpeed, maxSimultaneousShatter, beatSensitivity,
+      shatterAmount,
+      patternMode,
+      pattern: {
+        ringRadiusScale: 1,
+        ringAzimuthJitter: 0.14,
+        ringRadialJitter: 0.045,
+        ringVerticalJitter: 0.04,
+        galaxyBulgeFrac: 0.12,
+        galaxyBulgeRadius: 0.22,
+        galaxyArmInner: 0.28,
+        galaxyArmOuter: 1.15,
+        galaxySpiralTightness: 0.11,
+        galaxyArmSweepTurns: 5.2,
+        ...pattern,
+      },
+    };
     this.group = new THREE.Group();
     this.material = new THREE.MeshStandardMaterial({
       color: 0x60a5fa,
@@ -15,300 +54,305 @@ export default class PyramidField {
       transparent: true,
       opacity: 0.9,
     });
-    // Each entry: { anchor: THREE.Group, shards: THREE.Mesh[], basePositions: Float32Array[], dir: THREE.Vector3 }
-    this._clusters = [];
-    this._geometries = [];
+    this._shards = [];
+    this._geometry = null;
+    this._shatter = null;
+    this._barDuration = 2.0;
     this._spectrum = null;
-    this._orbitTime = 0;
-    this._orbitMin = 1;
-    this._orbitMax = 3;
-    this._introRadius = 80;
-    this._introActive = true;
-    this._introLerpSpeed = 2.;
     this._spectrumSmoothing = 0.08;
-    // Keyframe tween state
-    this._keyframes = null; // array of pre-computed shard states per keyframe
+    this._orbitTime = 0;
+    this._orbitMin = 1.5;
+    this._orbitMax = 3;
+    this._keyframes = null;
     this._tweenTime = 0;
-    this._tweenDuration = 1; // seconds per keyframe transition (overridden by setKeyframes)
+    this._tweenDuration = 1;
+    this._shatterWaveIndex = 0;
+    this._patternCoordinator = new FragmentPatternCoordinator();
     this.rebuild();
   }
 
   rebuild() {
-    // Dispose previous
     this._disposeContents();
-    this._introActive = true;
-
-    const { count: n, orbitRadius: r, size } = this.config;
-    const golden = Math.PI * (3 - Math.sqrt(5));
-    const up = new THREE.Vector3(0, 1, 0);
-
-    // Pre-create one shared geometry per band (large → small)
-    this._geometries = [];
-    for (let b = 0; b < BANDS; b++) {
-      const t = b / (BANDS - 1); // 0 = base (low), 1 = tip (high)
-      const bandSize = size * (1.0 - t * 0.8); // base shards are full size, tip shards 20%
-      const geo = new THREE.ConeGeometry(bandSize * 0.4, bandSize, 3);
-      this._geometries.push(geo);
+    const { count, size } = this.config;
+    this._geometry = new THREE.ConeGeometry(size * 0.4, size, 3);
+    for (let i = 0; i < count; i++) {
+      this._addShard(i, count);
     }
+    this._shatter = new ShardShatter({
+      maxShards: count,
+      material: this.material,
+      patternCoordinator: this._patternCoordinator,
+    });
+    this._shards.forEach((s, i) => {
+      this._shatter.registerShard(
+        i, this._geometry, s.mesh.position, s.mesh.quaternion, s.mesh.scale.x,
+      );
+    });
+    this.group.add(this._shatter.group);
+    this._primeShatterTimerForImmediateFirstWave();
+  }
 
-    for (let i = 0; i < n; i++) {
-      const y = n === 1 ? 0 : 1 - (i / (n - 1)) * 2;
-      const rY = Math.sqrt(1 - y * y);
-      const theta = golden * i;
-      const sx = Math.cos(theta) * rY;
-      const sz = Math.sin(theta) * rY;
-      const dir = new THREE.Vector3(sx, y, sz).normalize();
+  _primeShatterTimerForImmediateFirstWave() {
+    this._timeSinceLastShatter = this._barDuration * SHATTER_CYCLE_BARS;
+  }
 
-      // Anchor group positioned on the orbit sphere, oriented outward
-      const anchor = new THREE.Group();
-      anchor.position.set(sx * r, y * r, sz * r);
-      anchor.quaternion.setFromUnitVectors(up, dir);
-      this.group.add(anchor);
+  _addShard(i, count) {
+    const { orbitRadius } = this.config;
+    const y = count === 1 ? 0 : 1 - (i / (count - 1)) * 2;
+    const rY = Math.sqrt(1 - y * y);
+    const theta = GOLDEN_ANGLE * i;
+    const dir = new THREE.Vector3(
+      Math.cos(theta) * rY, y, Math.sin(theta) * rY,
+    ).normalize();
 
-      const shards = [];
-      const basePositions = [];
+    const mesh = new THREE.Mesh(this._geometry, this.material);
+    mesh.quaternion.setFromUnitVectors(_up, dir);
+    mesh.position.copy(dir).multiplyScalar(orbitRadius);
 
-      for (let b = 0; b < BANDS; b++) {
-        const t = b / (BANDS - 1);
-        // How many shards in this band: 1 at base, more towards tip
-        const shardCount = 1 + Math.floor(t * 4);
-        const bandRadius = size * 0.3 * (1.0 + t * 0.6);
-        const bandHeight = size * 0.2 + t * size * 0.8; // stack upward along local Y
+    const sizeMult = 0.7 + Math.random() * 0.6;
+    mesh.scale.setScalar(sizeMult);
+    const driftDir = Math.random() > 0.5 ? 1 : -1;
+    const driftMult = 0.7 + Math.random() * 0.6;
 
-        for (let s = 0; s < shardCount; s++) {
-          const angle = (s / shardCount) * Math.PI * 2 + b * 0.5;
-          const jitter = (Math.random() - 0.5) * bandRadius * 0.4;
-          const lx = Math.cos(angle) * bandRadius + (Math.random() - 0.5) * jitter;
-          const lz = Math.sin(angle) * bandRadius + (Math.random() - 0.5) * jitter;
-          const ly = bandHeight + (Math.random() - 0.5) * size * 0.1;
+    this._shards.push({ mesh, dir, sizeMult, driftDir, driftMult });
+    this.group.add(mesh);
+  }
 
-          const mesh = new THREE.Mesh(this._geometries[b], this.material);
-          mesh.position.set(lx, ly, lz);
-          mesh.userData.band = b;
-          mesh.userData.spinDir = Math.random() > 0.5 ? 1 : -1;
-          mesh.userData.spinMult = 0.7 + Math.random() * 0.6;
+  update(deltaTime) {
+    this.group.rotation.y += deltaTime * this.config.rotationSpeed;
+    const r = this._updateBreathing(deltaTime);
+    this._updateShardPositions(r, deltaTime);
+    if (this._shatter) {
+      this._tickShatterTimer(deltaTime);
+      this._syncShatterPositions();
+      this._shatter.update(deltaTime, this._barDuration * SHATTER_CYCLE_BARS);
+      this._restoreShardVisibilityAfterShatter();
+    }
+    this._updateKeyframeTween(deltaTime);
+  }
 
-          basePositions.push(new Float32Array([lx, ly, lz]));
-          anchor.add(mesh);
-          shards.push(mesh);
-        }
-      }
-
-      this._clusters.push({ anchor, shards, basePositions, dir: dir.clone() });
+  _tickShatterTimer(deltaTime) {
+    if (this.config.shatterAmount <= 0) return;
+    const period = this._barDuration * SHATTER_CYCLE_BARS;
+    this._timeSinceLastShatter += deltaTime;
+    if (this._timeSinceLastShatter >= period) {
+      this._timeSinceLastShatter -= period;
+      this._triggerShatter();
     }
   }
 
-  /**
-   * Apply FFT spectrum data. Each frequency band drives the displacement of
-   * its corresponding shard tier outward from the pyramid centre.
-   * @param {Float32Array|number[]} spectrum - normalised 0-1 frequency data
-   */
-  applySpectrum(spectrum) {
-    this._spectrum = spectrum;
-    if (!spectrum || spectrum.length === 0) {
-      this._targetSpread = 0;
-      return;
+  _syncShatterPositions() {
+    for (let i = 0; i < this._shards.length; i++) {
+      if (this._shatter.isShattered(i)) {
+        const m = this._shards[i].mesh;
+        this._shatter.syncShardTransform(i, m.position, m.quaternion, m.scale.x);
+      }
     }
+  }
 
-    const len = spectrum.length;
-    const bandEnergies = new Float32Array(BANDS);
-    let totalEnergy = 0;
-    for (let b = 0; b < BANDS; b++) {
-      const start = Math.floor((b / BANDS) * len);
-      const end = Math.floor(((b + 1) / BANDS) * len);
-      let sum = 0;
-      for (let j = start; j < end; j++) sum += spectrum[j];
-      bandEnergies[b] = sum / Math.max(1, end - start);
-      totalEnergy += bandEnergies[b];
+  _restoreShardVisibilityAfterShatter() {
+    for (let i = 0; i < this._shards.length; i++) {
+      const shard = this._shards[i];
+      if (!this._shatter.isShattered(i) && !shard.mesh.visible) {
+        shard.mesh.visible = true;
+        shard.mesh.scale.setScalar(shard.sizeMult);
+      }
     }
+  }
 
+  onBeat({ barDuration }) {
+    if (barDuration != null) this._barDuration = barDuration;
+  }
+
+  _triggerShatter() {
+    const intensity = this.config.shatterAmount;
+    if (intensity <= 0) return;
+    const depth = intensityToDepth(intensity);
+    const fragPerShard = FRAGMENTS_PER_LEVEL[depth - 1];
+    this._shatterWaveIndex += 1;
+    const patternId = this.config.patternMode;
+    const center = new THREE.Vector3(0, 0, 0);
+    this._patternCoordinator.beginWave({
+      waveIndex: this._shatterWaveIndex,
+      patternId,
+      center,
+      params: {
+        orbitRadius: this.config.orbitRadius,
+        ...this.config.pattern,
+      },
+    });
+    for (let i = 0; i < this._shards.length; i++) {
+      this._patternCoordinator.registerShard(i, fragPerShard);
+    }
+    this._patternCoordinator.finalizeWave();
+
+    for (let i = 0; i < this._shards.length; i++) {
+      const m = this._shards[i].mesh;
+      this._shatter.syncShardTransform(i, m.position, m.quaternion, m.scale.x);
+      m.visible = false;
+      this._shatter.triggerShatter(i, intensity);
+    }
+  }
+
+  _updateBreathing(deltaTime) {
+    this._orbitTime += deltaTime * this.config.orbitPulseSpeed;
+    const t01 = (Math.sin(this._orbitTime) + 1) * 0.5;
+    return this._orbitMin + (this._orbitMax - this._orbitMin) * t01;
+  }
+
+  _updateShardPositions(r, deltaTime) {
+    const { shardDrift } = this.config;
+    for (const shard of this._shards) {
+      shard.mesh.position.copy(shard.dir).multiplyScalar(r);
+      shard.mesh.rotation.y +=
+        deltaTime * shardDrift * shard.driftDir * shard.driftMult;
+    }
+  }
+
+  _updateKeyframeTween(deltaTime) {
+    if (!this._keyframes || this._keyframes.length < 2) return;
+    this._tweenTime += deltaTime * this.config.tweenSpeed;
+    const total = this._keyframes.length - 1;
+    const rawIdx = this._tweenTime / this._tweenDuration;
+    const idx = Math.min(Math.floor(rawIdx), total - 1);
+    const frac = Math.min(rawIdx - idx, 1);
+    const from = this._keyframes[idx];
+    const to = this._keyframes[Math.min(idx + 1, total)];
     const { size } = this.config;
     const lerp = this._spectrumSmoothing;
-    for (const cluster of this._clusters) {
-      const { shards, basePositions } = cluster;
-      for (let s = 0; s < shards.length; s++) {
-        const mesh = shards[s];
-        const bp = basePositions[s];
-        const b = mesh.userData.band;
-        const energy = bandEnergies[b];
-        const force = energy * size * 1.8;
-        const tx = bp[0] + (bp[0] === 0 ? 0 : Math.sign(bp[0]) * force);
-        const tz = bp[2] + (bp[2] === 0 ? 0 : Math.sign(bp[2]) * force);
-        const ty = bp[1] + force * (1 + b / BANDS);
-        // Smoothly interpolate toward target instead of snapping
-        mesh.position.x += (tx - mesh.position.x) * lerp;
-        mesh.position.y += (ty - mesh.position.y) * lerp;
-        mesh.position.z += (tz - mesh.position.z) * lerp;
-        const targetRx = energy * Math.PI * 0.15;
-        const targetRz = energy * Math.PI * 0.1 * (s % 2 === 0 ? 1 : -1);
-        mesh.rotation.x += (targetRx - mesh.rotation.x) * lerp;
-        mesh.rotation.z += (targetRz - mesh.rotation.z) * lerp;
-        const sc = 1.0 + energy * 0.35;
-        const curSc = mesh.scale.x;
-        mesh.scale.setScalar(curSc + (sc - curSc) * lerp);
-      }
+    for (let i = 0; i < this._shards.length; i++) {
+      if (this._shatter?.isShattered?.(i)) continue;
+      const energy = from[i] + (to[i] - from[i]) * frac;
+      applySpectrumToShard(this._shards[i], energy, size, lerp);
     }
   }
 
-  /**
-   * Pre-compute shard target states for each keyframe spectrum.
-   * Immediately applies the first keyframe so shards don't sit at base positions.
-   * @param {Float32Array[]} spectra - array of normalised 0-1 FFT snapshots
-   * @param {number} [songDuration=0] - total song duration in seconds; tween
-   *   transitions are spread evenly across it. Falls back to 3s/keyframe.
-   */
+  applySpectrum(spectrum) {
+    this._spectrum = spectrum;
+    if (!spectrum || spectrum.length === 0) return;
+    const { size } = this.config;
+    const lerp = this._spectrumSmoothing;
+    const len = spectrum.length;
+    for (let i = 0; i < this._shards.length; i++) {
+      if (this._shatter?.isShattered?.(i)) continue;
+      const energy = bandEnergyForShard(i, this._shards.length, spectrum, len);
+      applySpectrumToShard(this._shards[i], energy, size, lerp);
+    }
+  }
+
   setKeyframes(spectra, songDuration = 0) {
-    if (!spectra || spectra.length === 0) { this._keyframes = null; return; }
+    if (!spectra || spectra.length === 0) {
+      this._keyframes = null;
+      return;
+    }
     const count = spectra.length;
     if (songDuration > 0 && count > 1) {
       this._tweenDuration = songDuration / count;
     } else {
       this._tweenDuration = 3;
     }
-    const { size } = this.config;
-    this._keyframes = spectra.map((spectrum) => {
-      const len = spectrum.length;
-      const bandEnergies = new Float32Array(BANDS);
-      for (let b = 0; b < BANDS; b++) {
-        const start = Math.floor((b / BANDS) * len);
-        const end = Math.floor(((b + 1) / BANDS) * len);
-        let sum = 0;
-        for (let j = start; j < end; j++) sum += spectrum[j];
-        bandEnergies[b] = sum / Math.max(1, end - start);
-      }
-      // Compute target state for every shard in every cluster
-      const clusters = this._clusters.map((cluster) => {
-        return cluster.shards.map((mesh, s) => {
-          const bp = cluster.basePositions[s];
-          const b = mesh.userData.band;
-          const energy = bandEnergies[b];
-          const force = energy * size * 1.8;
-          const dx = bp[0] === 0 ? 0 : Math.sign(bp[0]) * force;
-          const dz = bp[2] === 0 ? 0 : Math.sign(bp[2]) * force;
-          const dy = force * (1 + b / BANDS);
-          return {
-            px: bp[0] + dx, py: bp[1] + dy, pz: bp[2] + dz,
-            rx: energy * Math.PI * 0.15,
-            rz: energy * Math.PI * 0.1 * (s % 2 === 0 ? 1 : -1),
-            sc: 1.0 + energy * 0.35,
-          };
-        });
-      });
-      return clusters;
-    });
+    const shardCount = this._shards.length;
+    this._keyframes = spectra.map(s =>
+      buildPerShardEnergies(shardCount, s),
+    );
     this._tweenTime = 0;
-
-    // Immediately apply keyframe 0 so pyramids don't sit at base positions
-    if (this._keyframes.length > 0) {
-      const kf0 = this._keyframes[0];
-      for (let c = 0; c < this._clusters.length; c++) {
-        const shards = this._clusters[c].shards;
-        const states = kf0[c];
-        for (let s = 0; s < shards.length; s++) {
-          const mesh = shards[s];
-          const st = states[s];
-          mesh.position.set(st.px, st.py, st.pz);
-          mesh.rotation.x = st.rx;
-          mesh.rotation.z = st.rz;
-          mesh.scale.setScalar(st.sc);
-        }
-      }
-    }
-  }
-
-  update(deltaTime) {
-    this.group.rotation.y += deltaTime * this.config.rotationSpeed;
-
-    // Oscillate orbit radius between _orbitMin and _orbitMax
-    this._orbitTime += deltaTime * this.config.orbitPulseSpeed;
-    const t01 = (Math.sin(this._orbitTime) + 1) * 0.5; // 0..1
-    const targetR = this._orbitMin + (this._orbitMax - this._orbitMin) * t01;
-
-    let r;
-    if (this._introActive) {
-      this._introRadius += (targetR - this._introRadius) * this._introLerpSpeed * deltaTime;
-      if (Math.abs(this._introRadius - targetR) < 0.05) {
-        this._introActive = false;
-      }
-      r = this._introRadius;
-    } else {
-      r = targetR;
-    }
-    for (const cluster of this._clusters) {
-      cluster.anchor.position.set(
-        cluster.dir.x * r,
-        cluster.dir.y * r,
-        cluster.dir.z * r,
-      );
-    }
-
-    // Spin each shard around its local Y axis
-    for (const cluster of this._clusters) {
-      for (const mesh of cluster.shards) {
-        mesh.rotation.y += deltaTime * this.config.shardSpin
-          * mesh.userData.spinDir * mesh.userData.spinMult;
-      }
-    }
-
-    // Tween between keyframes if available
-    if (!this._keyframes || this._keyframes.length < 2) return;
-    this._tweenTime += deltaTime * this.config.tweenSpeed;
-    const count = this._keyframes.length;
-    const totalDuration = count * this._tweenDuration;
-    const loopTime = this._tweenTime % totalDuration;
-    const rawIdx = loopTime / this._tweenDuration;
-    const idxA = Math.floor(rawIdx) % count;
-    const idxB = (idxA + 1) % count;
-    const t = rawIdx - Math.floor(rawIdx); // 0..1 between keyframes
-    // Smooth ease in-out
-    const ease = t * t * (3 - 2 * t);
-
-    const kfA = this._keyframes[idxA];
-    const kfB = this._keyframes[idxB];
-    for (let c = 0; c < this._clusters.length; c++) {
-      const shards = this._clusters[c].shards;
-      const a = kfA[c];
-      const b = kfB[c];
-      for (let s = 0; s < shards.length; s++) {
-        const mesh = shards[s];
-        const sa = a[s], sb = b[s];
-        mesh.position.set(
-          sa.px + (sb.px - sa.px) * ease,
-          sa.py + (sb.py - sa.py) * ease,
-          sa.pz + (sb.pz - sa.pz) * ease,
-        );
-        mesh.rotation.x = sa.rx + (sb.rx - sa.rx) * ease;
-        mesh.rotation.z = sa.rz + (sb.rz - sa.rz) * ease;
-        mesh.scale.setScalar(sa.sc + (sb.sc - sa.sc) * ease);
-      }
-    }
   }
 
   setupGUI(gui) {
     const folder = gui.addFolder("Pyramids");
     const rebind = () => this.rebuild();
     folder.add(this.config, "count", 1, 200, 1).name("Count").onChange(rebind);
-    folder.add(this.config, "orbitRadius", 1.0, 5.0).name("Orbit Radius").onChange(rebind);
+    folder.add(this.config, "orbitRadius", 1.0, 5.0)
+      .name("Orbit Radius").onChange(rebind);
     folder.add(this.config, "size", 0.05, 0.5).name("Size").onChange(rebind);
     folder.add(this.config, "rotationSpeed", 0, 2, 0.01).name("Orbit Speed");
-    folder.add(this.config, "shardSpin", 0, 5, 0.01).name("Shard Spin");
+    folder.add(this.config, "shardDrift", 0, 1, 0.01).name("Shard Drift");
     folder.add(this.config, "tweenSpeed", 0.1, 5, 0.01).name("Tween Speed");
-    folder.add(this.config, "orbitPulseSpeed", 0.05, 2, 0.01).name("Orbit Pulse Speed");
+    folder.add(this.config, "orbitPulseSpeed", 0.05, 2, 0.01)
+      .name("Orbit Pulse Speed");
+    folder.add(this.config, "maxSimultaneousShatter", 1, 30, 1)
+      .name("Max Shatter");
+    folder.add(this.config, "shatterAmount", 0, 1, 0.01)
+      .name("Shatter amount");
+    folder.add(this.config, "patternMode", { Sphere: 0, Rings: 1, Swirls: 2 })
+      .name("Pattern");
     folder.open();
+
+    const pat = this.config.pattern;
+    const patternFolder = gui.addFolder("Shatter pattern");
+    patternFolder.add(pat, "ringRadiusScale", 0.5, 2.0, 0.01)
+      .name("Ring band scale");
+    patternFolder.add(pat, "ringAzimuthJitter", 0, 0.5, 0.01)
+      .name("Ring azimuth jitter");
+    patternFolder.add(pat, "ringRadialJitter", 0, 0.15, 0.005)
+      .name("Ring radial jitter");
+    patternFolder.add(pat, "ringVerticalJitter", 0, 0.2, 0.005)
+      .name("Ring thickness (Y)");
+    patternFolder.add(pat, "galaxyBulgeFrac", 0.02, 0.35, 0.01)
+      .name("Galaxy bulge %");
+    patternFolder.add(pat, "galaxyBulgeRadius", 0.08, 0.45, 0.01)
+      .name("Galaxy bulge radius");
+    patternFolder.add(pat, "galaxyArmInner", 0.1, 0.7, 0.01)
+      .name("Galaxy arm inner");
+    patternFolder.add(pat, "galaxyArmOuter", 0.5, 2.0, 0.01)
+      .name("Galaxy arm outer");
+    patternFolder.add(pat, "galaxySpiralTightness", 0.04, 0.35, 0.01)
+      .name("Galaxy spiral tight");
+    patternFolder.add(pat, "galaxyArmSweepTurns", 2, 12, 0.1)
+      .name("Galaxy arm turns");
+    patternFolder.open();
+
     return folder;
   }
 
   _disposeContents() {
-    for (const cluster of this._clusters) {
-      cluster.anchor.parent?.remove(cluster.anchor);
+    if (this._shatter) {
+      this._shatter.dispose();
+      if (this._shatter.group) this.group.remove(this._shatter.group);
+      this._shatter = null;
     }
-    this._clusters = [];
-    for (const geo of this._geometries) geo.dispose();
-    this._geometries = [];
+    for (const shard of this._shards) {
+      shard.mesh.parent?.remove(shard.mesh);
+    }
+    this._shards = [];
+    if (this._geometry) {
+      this._geometry.dispose();
+      this._geometry = null;
+    }
   }
 
   dispose() {
     this._disposeContents();
     this.material.dispose();
   }
+}
+
+function bandEnergyForShard(shardIndex, shardCount, spectrum, len) {
+  const bandStart = Math.floor((shardIndex / shardCount) * len);
+  const bandEnd = Math.floor(((shardIndex + 1) / shardCount) * len);
+  const start = Math.min(bandStart, len - 1);
+  const end = Math.max(bandEnd, start + 1);
+  let sum = 0;
+  for (let j = start; j < end && j < len; j++) sum += spectrum[j];
+  return sum / Math.max(1, end - start);
+}
+
+function buildPerShardEnergies(shardCount, spectrum) {
+  const len = spectrum.length;
+  const energies = new Float32Array(shardCount);
+  for (let i = 0; i < shardCount; i++) {
+    energies[i] = bandEnergyForShard(i, shardCount, spectrum, len);
+  }
+  return energies;
+}
+
+function applySpectrumToShard(shard, energy, size, lerp) {
+  const { mesh, dir, sizeMult } = shard;
+  const targetScale = sizeMult * (1.0 + energy * 0.08);
+  const curScale = mesh.scale.x;
+  mesh.scale.setScalar(curScale + (targetScale - curScale) * lerp);
+  const push = energy * size * 0.3 * lerp;
+  mesh.position.x += dir.x * push;
+  mesh.position.y += dir.y * push;
+  mesh.position.z += dir.z * push;
 }

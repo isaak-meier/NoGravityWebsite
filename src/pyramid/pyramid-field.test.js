@@ -1,24 +1,59 @@
 /** @vitest-environment jsdom */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import * as THREE from 'three';
-import PyramidField from './pyramid-field.js';
+import PyramidField, { SHATTER_CYCLE_BARS } from './pyramid-field.js';
+import ShardShatter from './shard-shatter.js';
 
 describe('PyramidField', () => {
   // ── constructor ────────────────────────────────────────────────────────
 
   describe('constructor', () => {
-    it('creates a PyramidField with default config', () => {
+    it('creates with default config (count=60)', () => {
       const pf = new PyramidField();
-      expect(pf.config.count).toBe(12);
-      expect(pf.config.orbitRadius).toBe(1.46);
-      expect(pf.config.size).toBe(0.40595);
+      expect(pf.config.count).toBe(60);
+      expect(pf.config.shardDrift).toBe(0.05);
+      expect(pf._barDuration).toBe(2.0);
     });
 
-    it('accepts custom count, orbitRadius, and size', () => {
-      const pf = new PyramidField({ count: 10, orbitRadius: 3.0, size: 0.25 });
-      expect(pf.config.count).toBe(10);
-      expect(pf.config.orbitRadius).toBe(3.0);
-      expect(pf.config.size).toBe(0.25);
+    it('accepts custom config values', () => {
+      const pf = new PyramidField({ count: 20, orbitRadius: 3, size: 0.2 });
+      expect(pf.config.count).toBe(20);
+      expect(pf.config.orbitRadius).toBe(3);
+      expect(pf.config.size).toBe(0.2);
+    });
+
+    it('creates one Mesh per shard (no clusters)', () => {
+      const pf = new PyramidField({ count: 10 });
+      expect(pf._shards.length).toBe(10);
+      pf._shards.forEach(s => expect(s.mesh).toBeInstanceOf(THREE.Mesh));
+    });
+
+    it('creates a single shared ConeGeometry', () => {
+      const pf = new PyramidField({ count: 5 });
+      expect(pf._geometry).toBeInstanceOf(THREE.ConeGeometry);
+    });
+
+    it('all shards share the same geometry', () => {
+      const pf = new PyramidField({ count: 5 });
+      const geo = pf._geometry;
+      pf._shards.forEach(s => expect(s.mesh.geometry).toBe(geo));
+    });
+
+    it('distributes shards on a sphere at orbitRadius', () => {
+      const pf = new PyramidField({ count: 20 });
+      for (const s of pf._shards) {
+        const d = s.mesh.position.length();
+        expect(d).toBeCloseTo(pf.config.orbitRadius, 1);
+      }
+    });
+
+    it('handles count=1 without dividing by zero', () => {
+      const pf = new PyramidField({ count: 1 });
+      expect(pf._shards.length).toBe(1);
+      const pos = pf._shards[0].mesh.position;
+      expect(Number.isFinite(pos.x)).toBe(true);
+      expect(Number.isFinite(pos.y)).toBe(true);
+      expect(Number.isFinite(pos.z)).toBe(true);
     });
 
     it('creates a THREE.Group as the root', () => {
@@ -36,243 +71,55 @@ describe('PyramidField', () => {
       expect(pf.material.opacity).toBe(0.9);
     });
 
-    it('populates _clusters equal to count', () => {
-      const pf = new PyramidField({ count: 5 });
-      expect(pf._clusters.length).toBe(5);
-    });
-
-    it('creates 8 geometries (one per band)', () => {
-      const pf = new PyramidField({ count: 1 });
-      expect(pf._geometries.length).toBe(8);
-      pf._geometries.forEach((geo) => {
-        expect(geo).toBeInstanceOf(THREE.ConeGeometry);
-      });
-    });
-
-    it('adds anchor groups as children of the root group', () => {
+    it('adds shard meshes as children of the root group', () => {
       const pf = new PyramidField({ count: 4 });
-      expect(pf.group.children.length).toBe(4);
-      pf.group.children.forEach((child) => {
-        expect(child).toBeInstanceOf(THREE.Group);
-      });
+      expect(pf.group.children.length).toBe(5);
+      const meshes = pf.group.children.filter(c => c instanceof THREE.Mesh);
+      expect(meshes.length).toBe(4);
+      expect(pf.group.children.some(c => c instanceof THREE.Group)).toBe(true);
     });
 
-    it('each cluster has shards and basePositions arrays', () => {
-      const pf = new PyramidField({ count: 2 });
-      pf._clusters.forEach((cluster) => {
-        expect(Array.isArray(cluster.shards)).toBe(true);
-        expect(Array.isArray(cluster.basePositions)).toBe(true);
-        expect(cluster.shards.length).toBeGreaterThan(0);
-        expect(cluster.shards.length).toBe(cluster.basePositions.length);
-      });
-    });
-
-    it('all shards are Mesh instances with a band in userData', () => {
-      const pf = new PyramidField({ count: 1 });
-      const cluster = pf._clusters[0];
-      cluster.shards.forEach((mesh) => {
-        expect(mesh).toBeInstanceOf(THREE.Mesh);
-        expect(typeof mesh.userData.band).toBe('number');
-        expect(mesh.userData.band).toBeGreaterThanOrEqual(0);
-        expect(mesh.userData.band).toBeLessThan(8);
-      });
-    });
-
-    it('basePositions are Float32Arrays of length 3', () => {
-      const pf = new PyramidField({ count: 1 });
-      const cluster = pf._clusters[0];
-      cluster.basePositions.forEach((bp) => {
-        expect(bp).toBeInstanceOf(Float32Array);
-        expect(bp.length).toBe(3);
-      });
-    });
-
-    it('handles count=1 without dividing by zero', () => {
-      // count=1 triggers the n===1 branch for y calculation
-      const pf = new PyramidField({ count: 1 });
-      expect(pf._clusters.length).toBe(1);
-      const anchor = pf._clusters[0].anchor;
-      // y should be 0 for single-pyramid case
-      expect(anchor.position.y).toBeCloseTo(0);
-    });
-  });
-
-  // ── rebuild ────────────────────────────────────────────────────────────
-
-  describe('rebuild', () => {
-    it('clears and recreates clusters when called', () => {
-      const pf = new PyramidField({ count: 5 });
-      expect(pf._clusters.length).toBe(5);
-      pf.config.count = 3;
-      pf.rebuild();
-      expect(pf._clusters.length).toBe(3);
-      expect(pf.group.children.length).toBe(3);
-    });
-
-    it('disposes old geometries on rebuild', () => {
-      const pf = new PyramidField({ count: 2 });
-      const oldGeos = [...pf._geometries];
-      const spies = oldGeos.map((g) => vi.spyOn(g, 'dispose'));
-      pf.rebuild();
-      spies.forEach((spy) => expect(spy).toHaveBeenCalled());
-    });
-
-    it('removes old anchors from the group', () => {
+    it('each shard has sizeMult, driftDir, driftMult, and dir', () => {
       const pf = new PyramidField({ count: 3 });
-      expect(pf.group.children.length).toBe(3);
-      pf.config.count = 1;
-      pf.rebuild();
-      expect(pf.group.children.length).toBe(1);
-    });
-
-    it('creates new geometries after rebuild', () => {
-      const pf = new PyramidField({ count: 1 });
-      const oldGeos = pf._geometries;
-      pf.rebuild();
-      // new geometry array (different objects)
-      expect(pf._geometries).not.toBe(oldGeos);
-      expect(pf._geometries.length).toBe(8);
-    });
-  });
-
-  // ── applySpectrum ──────────────────────────────────────────────────────
-
-  describe('applySpectrum', () => {
-    it('stores the spectrum reference', () => {
-      const pf = new PyramidField({ count: 1 });
-      const spectrum = new Float32Array(16);
-      pf.applySpectrum(spectrum);
-      expect(pf._spectrum).toBe(spectrum);
-    });
-
-    it('does nothing with null spectrum (no crash)', () => {
-      const pf = new PyramidField({ count: 1 });
-      expect(() => pf.applySpectrum(null)).not.toThrow();
-    });
-
-    it('does nothing with empty spectrum (no crash)', () => {
-      const pf = new PyramidField({ count: 1 });
-      expect(() => pf.applySpectrum(new Float32Array(0))).not.toThrow();
-    });
-
-    it('displaces shards outward when spectrum has energy', () => {
-      const pf = new PyramidField({ count: 1, size: 0.15 });
-      const cluster = pf._clusters[0];
-      // record base Y positions
-      const baseYs = cluster.shards.map((_, i) => cluster.basePositions[i][1]);
-
-      // all-ones spectrum: every band gets energy=1
-      const spectrum = new Float32Array(64).fill(1.0);
-      pf.applySpectrum(spectrum);
-
-      // every shard should be displaced outward from its base Y
-      cluster.shards.forEach((mesh, i) => {
-        const b = mesh.userData.band;
-        const force = 1.0 * pf.config.size * 4; // energy=1
-        const dy = force * (1 + b / 8);
-        expect(mesh.position.y).toBeCloseTo(baseYs[i] + dy);
+      pf._shards.forEach(s => {
+        expect(typeof s.sizeMult).toBe('number');
+        expect(s.sizeMult).toBeGreaterThanOrEqual(0.7);
+        expect(s.sizeMult).toBeLessThanOrEqual(1.3);
+        expect(s.driftDir === 1 || s.driftDir === -1).toBe(true);
+        expect(typeof s.driftMult).toBe('number');
+        expect(s.dir).toBeInstanceOf(THREE.Vector3);
       });
     });
 
-    it('scales shards up based on energy', () => {
+    it('initializes orbit state', () => {
       const pf = new PyramidField({ count: 1 });
-      // all-ones spectrum
-      const spectrum = new Float32Array(64).fill(1.0);
-      pf.applySpectrum(spectrum);
-
-      const cluster = pf._clusters[0];
-      cluster.shards.forEach((mesh) => {
-        // scale = 1.0 + energy * 0.8 = 1.0 + 1 * 0.8 = 1.8
-        expect(mesh.scale.x).toBeCloseTo(1.8);
-        expect(mesh.scale.y).toBeCloseTo(1.8);
-        expect(mesh.scale.z).toBeCloseTo(1.8);
-      });
-    });
-
-    it('leaves shards at base position with zero spectrum', () => {
-      const pf = new PyramidField({ count: 1 });
-      const cluster = pf._clusters[0];
-      const baseYs = cluster.shards.map((_, i) => cluster.basePositions[i][1]);
-
-      const spectrum = new Float32Array(64).fill(0);
-      pf.applySpectrum(spectrum);
-
-      cluster.shards.forEach((mesh, i) => {
-        // no explosion, position should equal base
-        expect(mesh.position.y).toBeCloseTo(baseYs[i]);
-        // scale should be 1.0
-        expect(mesh.scale.x).toBeCloseTo(1.0);
-      });
-    });
-
-    it('x and z positions include radial displacement after spectrum apply', () => {
-      const pf = new PyramidField({ count: 1 });
-      const cluster = pf._clusters[0];
-      const baseXs = cluster.shards.map((_, i) => cluster.basePositions[i][0]);
-      const baseZs = cluster.shards.map((_, i) => cluster.basePositions[i][2]);
-
-      const spectrum = new Float32Array(64).fill(0.5);
-      pf.applySpectrum(spectrum);
-
-      cluster.shards.forEach((mesh, i) => {
-        const force = 0.5 * pf.config.size * 4;
-        const expectedDx = baseXs[i] === 0 ? 0 : Math.sign(baseXs[i]) * force;
-        const expectedDz = baseZs[i] === 0 ? 0 : Math.sign(baseZs[i]) * force;
-        expect(mesh.position.x).toBeCloseTo(baseXs[i] + expectedDx);
-        expect(mesh.position.z).toBeCloseTo(baseZs[i] + expectedDz);
-      });
-    });
-
-    it('handles spectrum shorter than 8 elements', () => {
-      const pf = new PyramidField({ count: 1 });
-      // only 4 elements — should still compute bands without crashing
-      const spectrum = new Float32Array([0.5, 0.5, 0.5, 0.5]);
-      expect(() => pf.applySpectrum(spectrum)).not.toThrow();
-    });
-
-    it('handles very large spectrum (512 bins)', () => {
-      const pf = new PyramidField({ count: 1 });
-      const spectrum = new Float32Array(512).fill(0.3);
-      expect(() => pf.applySpectrum(spectrum)).not.toThrow();
-    });
-
-    it('correctly maps low bands to low-index frequencies', () => {
-      // Put energy only in the lowest portion of the spectrum
-      const pf = new PyramidField({ count: 1 });
-      const spectrum = new Float32Array(80);
-      // only first 10 bins have energy (first band = bins 0..9)
-      for (let i = 0; i < 10; i++) spectrum[i] = 1.0;
-
-      pf.applySpectrum(spectrum);
-
-      const cluster = pf._clusters[0];
-      // band-0 shards should be displaced, band-7 shards should be near base
-      const band0Shards = cluster.shards.filter((m) => m.userData.band === 0);
-      const band7Shards = cluster.shards.filter((m) => m.userData.band === 7);
-      band0Shards.forEach((mesh) => {
-        expect(mesh.scale.x).toBeGreaterThan(1.0); // has energy
-      });
-      band7Shards.forEach((mesh) => {
-        expect(mesh.scale.x).toBeCloseTo(1.0); // no energy
-      });
+      expect(pf._orbitTime).toBe(0);
     });
   });
 
   // ── update ─────────────────────────────────────────────────────────────
 
   describe('update', () => {
-    it('rotates the group around Y axis', () => {
-      const pf = new PyramidField({ count: 1 });
-      const initialY = pf.group.rotation.y;
-      pf.update(1.0); // 1 second
-      expect(pf.group.rotation.y).toBeCloseTo(initialY + 0.15);
+    it('rotates the group', () => {
+      const pf = new PyramidField({ count: 5 });
+      pf.update(1.0);
+      expect(pf.group.rotation.y).toBeCloseTo(pf.config.rotationSpeed);
+    });
+
+    it('applies gentle drift rotation to each shard', () => {
+      const pf = new PyramidField({ count: 5 });
+      const rotBefore = pf._shards.map(s => s.mesh.rotation.y);
+      pf.update(1.0);
+      pf._shards.forEach((s, i) => {
+        expect(s.mesh.rotation.y).not.toBe(rotBefore[i]);
+      });
     });
 
     it('accumulates rotation over multiple calls', () => {
       const pf = new PyramidField({ count: 1 });
       pf.update(0.5);
       pf.update(0.5);
-      expect(pf.group.rotation.y).toBeCloseTo(0.15); // 0.5*0.15 + 0.5*0.15
+      expect(pf.group.rotation.y).toBeCloseTo(0.15);
     });
 
     it('handles zero deltaTime (no change)', () => {
@@ -281,82 +128,100 @@ describe('PyramidField', () => {
       pf.update(0);
       expect(pf.group.rotation.y).toBe(before);
     });
+
+    it('calls _shatter.update when _shatter is set', () => {
+      const pf = new PyramidField({ count: 2 });
+      const spy = vi.spyOn(pf._shatter, 'update');
+      pf.update(0.016);
+      expect(spy).toHaveBeenCalledWith(0.016, pf._barDuration * SHATTER_CYCLE_BARS);
+    });
   });
 
-  // ── setupGUI ───────────────────────────────────────────────────────────
+  // ── applySpectrum ──────────────────────────────────────────────────────
 
-  describe('setupGUI', () => {
-    it('calls gui.addFolder and returns the folder', () => {
-      const pf = new PyramidField({ count: 2 });
-      const mockFolder = {
-        add: vi.fn().mockReturnValue({ name: vi.fn().mockReturnValue({ onChange: vi.fn() }) }),
-        open: vi.fn(),
-      };
-      const mockGui = {
-        addFolder: vi.fn(() => mockFolder),
-      };
-      const folder = pf.setupGUI(mockGui);
-      expect(mockGui.addFolder).toHaveBeenCalledWith('Pyramids');
-      expect(folder).toBe(mockFolder);
+  describe('applySpectrum', () => {
+    it('does not crash with null spectrum', () => {
+      const pf = new PyramidField({ count: 5 });
+      expect(() => pf.applySpectrum(null)).not.toThrow();
     });
 
-    it('registers count, orbitRadius, and size controls', () => {
-      const pf = new PyramidField({ count: 2 });
-      const addCalls = [];
-      const mockFolder = {
-        add: vi.fn((...args) => {
-          addCalls.push(args[1]); // track which config key was added
-          return { name: vi.fn().mockReturnValue({ onChange: vi.fn() }) };
-        }),
-        open: vi.fn(),
-      };
-      const mockGui = { addFolder: vi.fn(() => mockFolder) };
-      pf.setupGUI(mockGui);
-      expect(addCalls).toContain('count');
-      expect(addCalls).toContain('orbitRadius');
-      expect(addCalls).toContain('size');
+    it('does not crash with empty spectrum', () => {
+      const pf = new PyramidField({ count: 5 });
+      expect(() => pf.applySpectrum(new Float32Array(0))).not.toThrow();
     });
 
-    it('opens the folder by default', () => {
+    it('applies subtle scale changes with energy', () => {
+      const pf = new PyramidField({ count: 10 });
+      const spectrum = new Float32Array(64).fill(0.5);
+      pf.applySpectrum(spectrum);
+      for (const s of pf._shards) {
+        expect(s.mesh.scale.x).not.toBe(s.sizeMult);
+      }
+    });
+
+    it('stores the spectrum reference', () => {
       const pf = new PyramidField({ count: 1 });
-      const mockFolder = {
-        add: vi.fn().mockReturnValue({ name: vi.fn().mockReturnValue({ onChange: vi.fn() }) }),
-        open: vi.fn(),
-      };
-      const mockGui = { addFolder: vi.fn(() => mockFolder) };
-      pf.setupGUI(mockGui);
-      expect(mockFolder.open).toHaveBeenCalled();
+      const spectrum = new Float32Array(16);
+      pf.applySpectrum(spectrum);
+      expect(pf._spectrum).toBe(spectrum);
+    });
+
+    it('handles spectrum shorter than shard count', () => {
+      const pf = new PyramidField({ count: 10 });
+      const spectrum = new Float32Array([0.5, 0.5, 0.5, 0.5]);
+      expect(() => pf.applySpectrum(spectrum)).not.toThrow();
+    });
+
+    it('handles very large spectrum (512 bins)', () => {
+      const pf = new PyramidField({ count: 5 });
+      const spectrum = new Float32Array(512).fill(0.3);
+      expect(() => pf.applySpectrum(spectrum)).not.toThrow();
+    });
+
+    it('pushes shards outward with energy', () => {
+      const pf = new PyramidField({ count: 5 });
+      const distBefore = pf._shards.map(s => s.mesh.position.length());
+      const spectrum = new Float32Array(64).fill(1.0);
+      pf.applySpectrum(spectrum);
+      pf._shards.forEach((s, i) => {
+        expect(s.mesh.position.length()).toBeGreaterThan(distBefore[i]);
+      });
+    });
+
+    it('leaves scale at sizeMult with zero spectrum', () => {
+      const pf = new PyramidField({ count: 5 });
+      const spectrum = new Float32Array(64).fill(0);
+      pf.applySpectrum(spectrum);
+      for (const s of pf._shards) {
+        expect(s.mesh.scale.x).toBeCloseTo(s.sizeMult);
+      }
     });
   });
 
   // ── dispose ────────────────────────────────────────────────────────────
 
   describe('dispose', () => {
-    it('clears all clusters', () => {
+    it('clears shards and disposes geometry and material', () => {
       const pf = new PyramidField({ count: 5 });
+      const geoSpy = vi.spyOn(pf._geometry, 'dispose');
+      const matSpy = vi.spyOn(pf.material, 'dispose');
       pf.dispose();
-      expect(pf._clusters.length).toBe(0);
+      expect(pf._shards.length).toBe(0);
+      expect(geoSpy).toHaveBeenCalled();
+      expect(matSpy).toHaveBeenCalled();
     });
 
-    it('disposes all geometries', () => {
-      const pf = new PyramidField({ count: 2 });
-      const spies = pf._geometries.map((g) => vi.spyOn(g, 'dispose'));
-      pf.dispose();
-      spies.forEach((spy) => expect(spy).toHaveBeenCalled());
-      expect(pf._geometries.length).toBe(0);
-    });
-
-    it('disposes the shared material', () => {
-      const pf = new PyramidField({ count: 1 });
-      const spy = vi.spyOn(pf.material, 'dispose');
-      pf.dispose();
-      expect(spy).toHaveBeenCalled();
-    });
-
-    it('removes anchors from the parent group', () => {
+    it('removes meshes from the group', () => {
       const pf = new PyramidField({ count: 3 });
       pf.dispose();
       expect(pf.group.children.length).toBe(0);
+    });
+
+    it('calls _shatter.dispose when _shatter is set', () => {
+      const pf = new PyramidField({ count: 2 });
+      const spy = vi.spyOn(pf._shatter, 'dispose');
+      pf.dispose();
+      expect(spy).toHaveBeenCalled();
     });
 
     it('is safe to call twice', () => {
@@ -369,11 +234,12 @@ describe('PyramidField', () => {
   // ── _disposeContents ───────────────────────────────────────────────────
 
   describe('_disposeContents', () => {
-    it('empties _clusters and _geometries', () => {
+    it('empties _shards and disposes geometry', () => {
       const pf = new PyramidField({ count: 3 });
+      const geoSpy = vi.spyOn(pf._geometry, 'dispose');
       pf._disposeContents();
-      expect(pf._clusters.length).toBe(0);
-      expect(pf._geometries.length).toBe(0);
+      expect(pf._shards.length).toBe(0);
+      expect(geoSpy).toHaveBeenCalled();
     });
 
     it('does not dispose the material (only dispose() does that)', () => {
@@ -384,6 +250,90 @@ describe('PyramidField', () => {
     });
   });
 
+  // ── rebuild ────────────────────────────────────────────────────────────
+
+  describe('rebuild', () => {
+    it('clears and recreates shards when called', () => {
+      const pf = new PyramidField({ count: 5 });
+      pf.config.count = 3;
+      pf.rebuild();
+      expect(pf._shards.length).toBe(3);
+    });
+
+    it('disposes old geometry on rebuild', () => {
+      const pf = new PyramidField({ count: 2 });
+      const oldGeo = pf._geometry;
+      const spy = vi.spyOn(oldGeo, 'dispose');
+      pf.rebuild();
+      expect(spy).toHaveBeenCalled();
+    });
+
+    it('removes old meshes from the group', () => {
+      const pf = new PyramidField({ count: 3 });
+      expect(pf.group.children.length).toBe(4);
+      pf.config.count = 1;
+      pf.rebuild();
+      expect(pf.group.children.length).toBe(2);
+    });
+
+    it('creates a new geometry after rebuild', () => {
+      const pf = new PyramidField({ count: 1 });
+      const oldGeo = pf._geometry;
+      pf.rebuild();
+      expect(pf._geometry).not.toBe(oldGeo);
+      expect(pf._geometry).toBeInstanceOf(THREE.ConeGeometry);
+    });
+  });
+
+  // ── setupGUI ───────────────────────────────────────────────────────────
+
+  describe('setupGUI', () => {
+    it('creates Pyramids folder with expected controls', () => {
+      const pf = new PyramidField({ count: 2 });
+      const addCalls = [];
+      const mockFolder = {
+        add: vi.fn((...args) => {
+          addCalls.push(args[1]);
+          return { name: vi.fn().mockReturnValue({ onChange: vi.fn() }) };
+        }),
+        open: vi.fn(),
+      };
+      const mockGui = { addFolder: vi.fn(() => mockFolder) };
+      pf.setupGUI(mockGui);
+      expect(mockGui.addFolder).toHaveBeenCalledWith('Pyramids');
+      expect(addCalls).toContain('count');
+      expect(addCalls).toContain('shardDrift');
+      expect(addCalls).toContain('orbitRadius');
+      expect(addCalls).toContain('size');
+      expect(addCalls).toContain('rotationSpeed');
+      expect(addCalls).toContain('tweenSpeed');
+      expect(addCalls).toContain('orbitPulseSpeed');
+      expect(addCalls).toContain('maxSimultaneousShatter');
+    });
+
+    it('opens the folder by default', () => {
+      const pf = new PyramidField({ count: 1 });
+      const mockFolder = {
+        add: vi.fn().mockReturnValue({ name: vi.fn().mockReturnValue({ onChange: vi.fn() }) }),
+        open: vi.fn(),
+      };
+      const mockGui = { addFolder: vi.fn(() => mockFolder) };
+      pf.setupGUI(mockGui);
+      expect(mockFolder.open).toHaveBeenCalled();
+    });
+
+    it('returns the folder', () => {
+      const pf = new PyramidField({ count: 1 });
+      const mockFolder = {
+        add: vi.fn().mockReturnValue({ name: vi.fn().mockReturnValue({ onChange: vi.fn() }) }),
+        open: vi.fn(),
+      };
+      const mockGui = { addFolder: vi.fn(() => mockFolder) };
+      const result = pf.setupGUI(mockGui);
+      expect(result).toBe(mockFolder);
+    });
+  });
+
   // ── setKeyframes ───────────────────────────────────────────────────────
 
   describe('setKeyframes', () => {
@@ -391,245 +341,125 @@ describe('PyramidField', () => {
       return new Float32Array(length).fill(value);
     }
 
-    it('stores keyframes when given valid spectra', () => {
-      const pf = new PyramidField({ count: 1 });
+    it('stores per-shard energy keyframes when given valid spectra', () => {
+      const pf = new PyramidField({ count: 5 });
       pf.setKeyframes([makeSpectrum(0.5), makeSpectrum(1.0)]);
       expect(pf._keyframes).not.toBeNull();
       expect(pf._keyframes.length).toBe(2);
+      expect(pf._keyframes[0].length).toBe(5);
+      expect(pf._keyframes[1].length).toBe(5);
     });
 
     it('clears keyframes when given null', () => {
-      const pf = new PyramidField({ count: 1 });
-      pf.setKeyframes([makeSpectrum(0.5), makeSpectrum(1.0)]);
+      const pf = new PyramidField({ count: 5 });
+      pf.setKeyframes([makeSpectrum(0.5)]);
       pf.setKeyframes(null);
       expect(pf._keyframes).toBeNull();
     });
 
     it('clears keyframes when given empty array', () => {
-      const pf = new PyramidField({ count: 1 });
+      const pf = new PyramidField({ count: 5 });
       pf.setKeyframes([makeSpectrum(0.5)]);
       pf.setKeyframes([]);
       expect(pf._keyframes).toBeNull();
     });
 
     it('resets tweenTime to 0', () => {
-      const pf = new PyramidField({ count: 1 });
+      const pf = new PyramidField({ count: 5 });
       pf._tweenTime = 10;
       pf.setKeyframes([makeSpectrum(0.3), makeSpectrum(0.7)]);
       expect(pf._tweenTime).toBe(0);
     });
 
-    it('computes per-cluster, per-shard state for each keyframe', () => {
-      const pf = new PyramidField({ count: 2 });
-      pf.setKeyframes([makeSpectrum(0.5)]);
-      // keyframes[0] should have one entry per cluster
-      expect(pf._keyframes[0].length).toBe(2);
-      // each cluster entry should have one entry per shard
-      const clusterShardCount = pf._clusters[0].shards.length;
-      expect(pf._keyframes[0][0].length).toBe(clusterShardCount);
-    });
-
-    it('each shard state has px, py, pz, rx, rz, sc', () => {
-      const pf = new PyramidField({ count: 1 });
-      pf.setKeyframes([makeSpectrum(0.5)]);
-      const state = pf._keyframes[0][0][0];
-      expect(state).toHaveProperty('px');
-      expect(state).toHaveProperty('py');
-      expect(state).toHaveProperty('pz');
-      expect(state).toHaveProperty('rx');
-      expect(state).toHaveProperty('rz');
-      expect(state).toHaveProperty('sc');
-    });
-
-    it('zero spectrum keyframe has shards at base positions with scale 1', () => {
-      const pf = new PyramidField({ count: 1 });
-      pf.setKeyframes([makeSpectrum(0)]);
-      const cluster = pf._clusters[0];
-      const kf = pf._keyframes[0][0];
-      cluster.shards.forEach((_, s) => {
-        const bp = cluster.basePositions[s];
-        expect(kf[s].px).toBeCloseTo(bp[0]);
-        expect(kf[s].py).toBeCloseTo(bp[1]);
-        expect(kf[s].pz).toBeCloseTo(bp[2]);
-        expect(kf[s].sc).toBeCloseTo(1.0);
-      });
-    });
-
-    it('high energy spectrum keyframe displaces shards outward', () => {
-      const pf = new PyramidField({ count: 1 });
-      pf.setKeyframes([makeSpectrum(1.0)]);
-      const cluster = pf._clusters[0];
-      const kf = pf._keyframes[0][0];
-      cluster.shards.forEach((mesh, s) => {
-        const bp = cluster.basePositions[s];
-        const b = mesh.userData.band;
-        const force = 1.0 * pf.config.size * 4;
-        const dy = force * (1 + b / 8);
-        expect(kf[s].py).toBeCloseTo(bp[1] + dy);
-        expect(kf[s].sc).toBeCloseTo(1.8);
-      });
-    });
-
-    it('immediately applies keyframe 0 to shard meshes', () => {
-      const pf = new PyramidField({ count: 1 });
-      const cluster = pf._clusters[0];
-      const baseYs = cluster.shards.map((_, i) => cluster.basePositions[i][1]);
-
-      pf.setKeyframes([makeSpectrum(1.0), makeSpectrum(0.5)]);
-
-      // Shards should now be at keyframe 0 positions, not base
-      const kf = pf._keyframes[0][0];
-      cluster.shards.forEach((mesh, s) => {
-        expect(mesh.position.x).toBeCloseTo(kf[s].px);
-        expect(mesh.position.y).toBeCloseTo(kf[s].py);
-        expect(mesh.position.z).toBeCloseTo(kf[s].pz);
-        expect(mesh.scale.x).toBeCloseTo(kf[s].sc);
-        // Verify they are NOT at unreacted base positions
-        expect(mesh.position.y).not.toBeCloseTo(baseYs[s]);
-      });
-    });
-
     it('sets tweenDuration from songDuration', () => {
-      const pf = new PyramidField({ count: 1 });
-      // 5 keyframes, 100s song → 20s per transition
+      const pf = new PyramidField({ count: 5 });
       const spectra = Array.from({ length: 5 }, () => makeSpectrum(0.5));
       pf.setKeyframes(spectra, 100);
       expect(pf._tweenDuration).toBeCloseTo(20);
     });
 
     it('falls back to 3s per transition when songDuration is 0', () => {
-      const pf = new PyramidField({ count: 1 });
+      const pf = new PyramidField({ count: 5 });
       pf.setKeyframes([makeSpectrum(0.3), makeSpectrum(0.7)], 0);
       expect(pf._tweenDuration).toBe(3);
     });
 
     it('falls back to 3s per transition with only 1 keyframe', () => {
-      const pf = new PyramidField({ count: 1 });
+      const pf = new PyramidField({ count: 5 });
       pf.setKeyframes([makeSpectrum(0.5)], 60);
       expect(pf._tweenDuration).toBe(3);
     });
+
+    it('tween skips shattered shards', () => {
+      const pf = new PyramidField({ count: 10 });
+      pf.setKeyframes([makeSpectrum(0), makeSpectrum(1.0)], 6);
+      pf.config.shatterAmount = 0.5;
+      pf._triggerShatter();
+      const shatteredIdx = pf._shards.findIndex((_, i) => pf._shatter.isShattered(i));
+      if (shatteredIdx >= 0) {
+        expect(pf._shards[shatteredIdx].mesh.visible).toBe(false);
+      }
+      pf.update(0.5);
+      if (shatteredIdx >= 0 && pf._shatter.isShattered(shatteredIdx)) {
+        expect(pf._shards[shatteredIdx].mesh.visible).toBe(false);
+      }
+    });
+
+    it('applies tween energy to non-shattered shards', () => {
+      const pf = new PyramidField({ count: 5 });
+      pf.setKeyframes([makeSpectrum(0), makeSpectrum(1.0)], 10);
+      pf._timeSinceLastShatter = 0;
+      const scaleBefore = pf._shards[0].mesh.scale.x;
+      pf.update(1.0);
+      expect(pf._shards[0].mesh.scale.x).not.toBeCloseTo(scaleBefore, 3);
+    });
   });
 
-  // ── update (keyframe tweening) ─────────────────────────────────────────
-
-  describe('update (keyframe tweening)', () => {
-    function makeSpectrum(value, length = 64) {
-      return new Float32Array(length).fill(value);
-    }
-
-    it('does not crash with no keyframes set', () => {
-      const pf = new PyramidField({ count: 1 });
-      expect(() => pf.update(0.016)).not.toThrow();
+  describe('shatter integration', () => {
+    it('creates a ShardShatter instance internally', () => {
+      const pf = new PyramidField({ count: 10 });
+      expect(pf._shatter).toBeInstanceOf(ShardShatter);
     });
 
-    it('does not tween with only 1 keyframe (needs at least 2)', () => {
-      const pf = new PyramidField({ count: 1 });
-      pf.setKeyframes([makeSpectrum(0.5)]);
-      const cluster = pf._clusters[0];
-      const posYBefore = cluster.shards[0].position.y;
-      pf.update(1.0);
-      // Position should stay at keyframe 0 (no tween partner)
-      expect(cluster.shards[0].position.y).toBeCloseTo(posYBefore);
+    it('triggers shatters on first update (timer primed for immediate first wave)', () => {
+      const pf = new PyramidField({ count: 10 });
+      expect(pf._shards.every((_, i) => !pf._shatter.isShattered(i))).toBe(true);
+      pf.update(0.02);
+      const anyShattered = pf._shards.some((_, i) => pf._shatter.isShattered(i));
+      expect(anyShattered).toBe(true);
     });
 
-    it('advances _tweenTime by deltaTime', () => {
-      const pf = new PyramidField({ count: 1 });
-      pf.setKeyframes([makeSpectrum(0.3), makeSpectrum(0.7)]);
-      pf.update(0.5);
-      // tweenTime should be 0.5 (started at 0, added 0.5)
-      expect(pf._tweenTime).toBeCloseTo(0.5);
+    it('is not shattered before first update', () => {
+      const pf = new PyramidField({ count: 10 });
+      expect(pf._shards.every((_, i) => !pf._shatter.isShattered(i))).toBe(true);
     });
 
-    it('interpolates shard positions between two keyframes', () => {
-      const pf = new PyramidField({ count: 1 });
-      pf.setKeyframes([makeSpectrum(0), makeSpectrum(1.0)], 6);
-      // _tweenDuration = 6/2 = 3s per transition
-
-      const kf0 = pf._keyframes[0][0];
-      const kf1 = pf._keyframes[1][0];
-
-      // Advance to midpoint of first transition (t=0.5 → ease = 0.5)
-      pf.update(1.5); // 1.5s into a 3s transition → rawIdx = 0.5
-
-      const cluster = pf._clusters[0];
-      const t = 0.5;
-      const ease = t * t * (3 - 2 * t); // 0.5
-      cluster.shards.forEach((mesh, s) => {
-        const expected = kf0[s].py + (kf1[s].py - kf0[s].py) * ease;
-        expect(mesh.position.y).toBeCloseTo(expected, 2);
-      });
+    it('hides shard mesh when shattered', () => {
+      const pf = new PyramidField({ count: 10 });
+      pf.update(0.02);
+      const hidden = pf._shards.filter(s => !s.mesh.visible);
+      expect(hidden.length).toBeGreaterThan(0);
     });
 
-    it('loops back to keyframe 0 after completing all transitions', () => {
-      const pf = new PyramidField({ count: 1 });
-      pf.setKeyframes([makeSpectrum(0), makeSpectrum(1.0)], 6);
-      // totalDuration = 2 * 3 = 6s; at t=6 we're back at the start
-
-      const kf0 = pf._keyframes[0][0];
-      pf.update(6.0); // full loop
-      // loopTime = 0, so shards should be at keyframe 0
-      const cluster = pf._clusters[0];
-      cluster.shards.forEach((mesh, s) => {
-        expect(mesh.position.y).toBeCloseTo(kf0[s].py, 2);
-      });
+    it('restores shard visibility after recombination', () => {
+      const pf = new PyramidField({ count: 10 });
+      const period = pf._barDuration * SHATTER_CYCLE_BARS;
+      pf.update(period + 0.01);
+      pf.update(period + 0.5);
+      pf._shards.forEach(s => expect(s.mesh.visible).toBe(true));
     });
 
-    it('uses smooth ease in-out (smoothstep)', () => {
-      const pf = new PyramidField({ count: 1 });
-      pf.setKeyframes([makeSpectrum(0), makeSpectrum(1.0)], 4);
-      // _tweenDuration = 4/2 = 2s
-
-      const kf0 = pf._keyframes[0][0];
-      const kf1 = pf._keyframes[1][0];
-
-      // At t=0.25 of transition (0.5s into 2s transition)
-      pf.update(0.5);
-      const t = 0.25;
-      const ease = t * t * (3 - 2 * t); // ~0.15625
-      const cluster = pf._clusters[0];
-      const shard0 = cluster.shards[0];
-      const expected = kf0[0].sc + (kf1[0].sc - kf0[0].sc) * ease;
-      expect(shard0.scale.x).toBeCloseTo(expected, 3);
+    it('onBeat updates barDuration', () => {
+      const pf = new PyramidField({ count: 10 });
+      pf.onBeat({ barDuration: 1.5 });
+      expect(pf._barDuration).toBe(1.5);
     });
 
-    it('interpolates rotation.x and rotation.z', () => {
-      const pf = new PyramidField({ count: 1 });
-      pf.setKeyframes([makeSpectrum(0), makeSpectrum(1.0)], 4);
-      const kf0 = pf._keyframes[0][0];
-      const kf1 = pf._keyframes[1][0];
-
-      pf.update(1.0); // midpoint: t=0.5, ease=0.5
-
-      const cluster = pf._clusters[0];
-      cluster.shards.forEach((mesh, s) => {
-        const expectedRx = kf0[s].rx + (kf1[s].rx - kf0[s].rx) * 0.5;
-        const expectedRz = kf0[s].rz + (kf1[s].rz - kf0[s].rz) * 0.5;
-        expect(mesh.rotation.x).toBeCloseTo(expectedRx, 2);
-        expect(mesh.rotation.z).toBeCloseTo(expectedRz, 2);
-      });
-    });
-
-    it('still rotates group while tweening keyframes', () => {
-      const pf = new PyramidField({ count: 1 });
-      pf.setKeyframes([makeSpectrum(0.3), makeSpectrum(0.7)]);
-      const initialRot = pf.group.rotation.y;
-      pf.update(1.0);
-      expect(pf.group.rotation.y).toBeCloseTo(initialRot + 0.15);
-    });
-
-    it('handles 5 keyframes with song duration', () => {
-      const pf = new PyramidField({ count: 1 });
-      const spectra = [0.1, 0.3, 0.5, 0.7, 0.9].map((v) => makeSpectrum(v));
-      pf.setKeyframes(spectra, 150);
-      // 150s / 5 = 30s per transition
-      expect(pf._tweenDuration).toBeCloseTo(30);
-      // After 30s we should be at keyframe 1
-      pf.update(30);
-      const kf1 = pf._keyframes[1][0];
-      const cluster = pf._clusters[0];
-      cluster.shards.forEach((mesh, s) => {
-        expect(mesh.position.y).toBeCloseTo(kf1[s].py, 2);
-      });
+    it('disposes ShardShatter on dispose', () => {
+      const pf = new PyramidField({ count: 5 });
+      const spy = vi.spyOn(pf._shatter, 'dispose');
+      pf.dispose();
+      expect(spy).toHaveBeenCalled();
     });
   });
 });
