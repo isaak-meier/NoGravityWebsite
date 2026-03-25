@@ -133,7 +133,7 @@ describe('PyramidField', () => {
       const pf = new PyramidField({ count: 2 });
       const spy = vi.spyOn(pf._shatter, 'update');
       pf.update(0.016);
-      expect(spy).toHaveBeenCalledWith(0.016, pf._barDuration);
+      expect(spy).toHaveBeenCalledWith(0.016, pf._barDuration * 8);
     });
   });
 
@@ -393,7 +393,7 @@ describe('PyramidField', () => {
     it('tween skips shattered shards', () => {
       const pf = new PyramidField({ count: 10 });
       pf.setKeyframes([makeSpectrum(0), makeSpectrum(1.0)], 6);
-      pf.onBeat({ isBeat: true, intensity: 1.0, barDuration: 4.0 });
+      pf._triggerShatter(0.5);
       const shatteredIdx = pf._shards.findIndex((_, i) => pf._shatter.isShattered(i));
       if (shatteredIdx >= 0) {
         expect(pf._shards[shatteredIdx].mesh.visible).toBe(false);
@@ -421,7 +421,8 @@ describe('PyramidField', () => {
 
     it('triggers shatters on timer tick', () => {
       const pf = new PyramidField({ count: 10 });
-      pf.update(pf._barDuration - 0.01);
+      const period = pf._barDuration * 8;
+      pf.update(period - 0.01);
       pf.update(0.02);
       const anyShattered = pf._shards.some((_, i) => pf._shatter.isShattered(i));
       expect(anyShattered).toBe(true);
@@ -436,7 +437,8 @@ describe('PyramidField', () => {
 
     it('hides shard mesh when shattered', () => {
       const pf = new PyramidField({ count: 10 });
-      pf.update(pf._barDuration - 0.01);
+      const period = pf._barDuration * 8;
+      pf.update(period - 0.01);
       pf.update(0.02);
       const hidden = pf._shards.filter(s => !s.mesh.visible);
       expect(hidden.length).toBeGreaterThan(0);
@@ -444,8 +446,9 @@ describe('PyramidField', () => {
 
     it('restores shard visibility after recombination', () => {
       const pf = new PyramidField({ count: 10 });
-      pf.update(pf._barDuration + 0.01);
-      pf.update(pf._barDuration + 0.5);
+      const period = pf._barDuration * 8;
+      pf.update(period + 0.01);
+      pf.update(period + 0.5);
       pf._shards.forEach(s => expect(s.mesh.visible).toBe(true));
     });
 

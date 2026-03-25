@@ -3,6 +3,8 @@ import ShardShatter from "./shard-shatter.js";
 
 const _up = new THREE.Vector3(0, 1, 0);
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+/** Bars between all-shard waves; one shatter animation lasts this many bars. */
+const SHATTER_CYCLE_BARS = 8;
 
 export default class PyramidField {
   constructor({
@@ -92,16 +94,17 @@ export default class PyramidField {
     if (this._shatter) {
       this._tickShatterTimer(deltaTime);
       this._syncShatterPositions();
-      this._shatter.update(deltaTime, this._barDuration);
+      this._shatter.update(deltaTime, this._barDuration * SHATTER_CYCLE_BARS);
       this._restoreShardVisibilityAfterShatter();
     }
     this._updateKeyframeTween(deltaTime);
   }
 
   _tickShatterTimer(deltaTime) {
+    const period = this._barDuration * SHATTER_CYCLE_BARS;
     this._timeSinceLastShatter += deltaTime;
-    if (this._timeSinceLastShatter >= this._barDuration) {
-      this._timeSinceLastShatter -= this._barDuration;
+    if (this._timeSinceLastShatter >= period) {
+      this._timeSinceLastShatter -= period;
       this._triggerShatter(0.5);
     }
   }
@@ -130,18 +133,7 @@ export default class PyramidField {
   }
 
   _triggerShatter(intensity) {
-    const half = Math.floor(this._shards.length / 2);
-    let shatteredCount = 0;
-    const eligible = [];
     for (let i = 0; i < this._shards.length; i++) {
-      if (this._shatter.isShattered(i)) shatteredCount++;
-      else eligible.push(i);
-    }
-    const budget = Math.max(0, half - shatteredCount);
-    const n = Math.min(Math.ceil(this._shards.length / 7), eligible.length, budget);
-    if (n <= 0) return;
-    const picked = pickEvenlySpacedIndices(eligible, n);
-    for (const i of picked) {
       const m = this._shards[i].mesh;
       this._shatter.syncShardTransform(i, m.position, m.quaternion, m.scale.x);
       m.visible = false;
@@ -251,19 +243,6 @@ export default class PyramidField {
     this._disposeContents();
     this.material.dispose();
   }
-}
-
-function pickEvenlySpacedIndices(eligible, n) {
-  const sorted = [...eligible].sort((a, b) => a - b);
-  const m = sorted.length;
-  const take = Math.min(n, m);
-  if (take <= 0) return [];
-  const out = [];
-  for (let i = 0; i < take; i++) {
-    const slot = Math.floor((i + 0.5) * m / take);
-    out.push(sorted[slot]);
-  }
-  return out;
 }
 
 function bandEnergyForShard(shardIndex, shardCount, spectrum, len) {
