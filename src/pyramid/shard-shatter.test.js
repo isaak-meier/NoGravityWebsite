@@ -1,7 +1,9 @@
 /** @vitest-environment jsdom */
 import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
-import ShardShatter from './shard-shatter.js';
+import ShardShatter, { T_PATTERN_END } from './shard-shatter.js';
+import FragmentPatternCoordinator from './fragment-pattern-coordinator.js';
+import { PATTERN_RING } from './fragment-pattern-math.js';
 
 const ID_QUAT = new THREE.Quaternion();
 
@@ -154,6 +156,37 @@ describe('ShardShatter', () => {
       const ss = new ShardShatter({ maxShards: 5, material: mat });
       const meshes = ss.group.children.filter(c => c.isInstancedMesh);
       expect(meshes.length).toBe(3);
+    });
+  });
+
+  describe('pattern coordinator', () => {
+    it('lerps toward ring target during pattern phase', () => {
+      const mat = new THREE.MeshStandardMaterial();
+      const coord = new FragmentPatternCoordinator();
+      coord.beginWave({
+        waveIndex: 1,
+        patternId: PATTERN_RING,
+        center: new THREE.Vector3(0, 0, 0),
+        params: { orbitRadius: 2 },
+      });
+      coord.registerShard(0, 18);
+      coord.finalizeWave();
+      const ss = new ShardShatter({
+        maxShards: 5,
+        material: mat,
+        patternCoordinator: coord,
+      });
+      const geo = makeConeGeo();
+      ss.registerShard(0, geo, new THREE.Vector3(0, 0, 1), ID_QUAT, 1);
+      ss.triggerShatter(0, 0.2);
+      const state = ss._shardStates.get(0);
+      state.t = T_PATTERN_END * 0.75;
+      ss._applyTransforms(state);
+      const pool = ss._pools[state.levelIndex];
+      const m = new THREE.Matrix4();
+      pool.mesh.getMatrixAt(state.slots[0], m);
+      const p = new THREE.Vector3().setFromMatrixPosition(m);
+      expect(p.length()).toBeGreaterThan(0.5);
     });
   });
 

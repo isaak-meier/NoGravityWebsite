@@ -62,16 +62,20 @@ function subdivideTrianglesOnce(triangles) {
 
 // --- Pool & animation helpers ---
 
-const FRAGMENTS_PER_LEVEL = [18, 54, 162];
+export const FRAGMENTS_PER_LEVEL = [18, 54, 162];
 
-function makeFragmentGeometry() {
-  return new THREE.ConeGeometry(0.4, 1.0, 3);
-}
-
-function intensityToDepth(intensity) {
+export function intensityToDepth(intensity) {
   if (intensity < 0.33) return 1;
   if (intensity < 0.66) return 2;
   return 3;
+}
+
+/** Normalized time: burst [0, T_BURST_END), pattern [T_BURST_END, T_PATTERN_END), return [T_PATTERN_END, 1] */
+export const T_BURST_END = 0.15;
+export const T_PATTERN_END = 0.5;
+
+function makeFragmentGeometry() {
+  return new THREE.ConeGeometry(0.4, 1.0, 3);
 }
 
 function generateWorldVelocity(localCentroid, shardQuat, intensity) {
@@ -122,12 +126,26 @@ function computeTumbleAngle(t) {
   return 1.3 * (1 - u);
 }
 
+/** @param {number} t */
+function computeTumbleAnglePattern(t) {
+  if (t < T_BURST_END) return t / T_BURST_END;
+  if (t < T_PATTERN_END) {
+    const u = (t - T_BURST_END) / (T_PATTERN_END - T_BURST_END);
+    return 1.0 + u * 0.3;
+  }
+  const u = (t - T_PATTERN_END) / (1 - T_PATTERN_END);
+  return 1.3 * (1 - u);
+}
+
 const _euler = new THREE.Euler();
 const _mat4 = new THREE.Matrix4();
 const _quatA = new THREE.Quaternion();
 const _quatB = new THREE.Quaternion();
 const _scaleVec = new THREE.Vector3();
 const _zeroMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
+const _burstEnd = new THREE.Vector3();
+const _patternPos = new THREE.Vector3();
+const _fragPos = new THREE.Vector3();
 
 function quatFromTumbleVecInto(tumble, angle, target) {
   _euler.set(tumble.x * angle, tumble.y * angle, tumble.z * angle);
@@ -143,9 +161,17 @@ function buildFragmentMatrix(position, quaternion, scale) {
 // --- ShardShatter class ---
 
 export default class ShardShatter {
-  constructor({ maxShards, material }) {
+  /**
+   * @param {object} opts
+   * @param {number} opts.maxShards
+   * @param {import('three').Material} opts.material
+   * @param {import('./fragment-pattern-coordinator.js').default | null} [opts.patternCoordinator]
+   */
+  constructor({ maxShards, material, patternCoordinator = null }) {
     this.maxShards = maxShards;
     this.material = material;
+    /** @type {import('./fragment-pattern-coordinator.js').default | null} */
+    this.patternCoordinator = patternCoordinator;
     this.group = new THREE.Group();
     this._shardStates = new Map();
     this._shardRegistry = new Map();
@@ -243,10 +269,17 @@ export default class ShardShatter {
     const shardQuat = entry.quaternion.clone();
     const shardScale = entry.scale;
 
+    let globalSlotBase = 0;
+    const coord = this.patternCoordinator;
+    if (coord?.finalized && coord.totalFragmentCount > 0) {
+      globalSlotBase = coord.getBaseOffset(index);
+    }
+
     const state = {
       depth, levelIndex, t: 0,
       centroids, quatFaces, worldPos, shardQuat, shardScale,
       velocities, tumbles, radii, slots,
+      globalSlotBase,
     };
     this._shardStates.set(index, state);
     this._applyTransforms(state);
@@ -255,22 +288,49 @@ export default class ShardShatter {
   _applyTransforms(state) {
     const {
       levelIndex, slots, centroids, quatFaces, worldPos, shardQuat, shardScale,
-      velocities, tumbles, radii, t,
+      velocities, tumbles, radii, t, globalSlotBase,
     } = state;
     const pool = this._pools[levelIndex];
-    const ang = computeTumbleAngle(t);
-    const angPeak = computeTumbleAngle(0.5);
+    const coord = this.patternCoordinator;
+    const usePattern = coord?.finalized && coord.totalFragmentCount > 0;
+
+    const ang = usePattern ? computeTumbleAnglePattern(t) : computeTumbleAngle(t);
+    const angPeak = usePattern
+      ? computeTumbleAnglePattern(T_PATTERN_END)
+      : computeTumbleAngle(0.5);
+    const tQuatSplit = usePattern ? T_PATTERN_END : 0.5;
+
     for (let i = 0; i < slots.length; i++) {
       const restPos = localPointToWorld(centroids[i], worldPos, shardQuat, shardScale);
       _quatA.copy(shardQuat).multiply(quatFaces[i]);
       const restQuat = _quatA;
-      const pos = computeFragmentPosition(restPos, velocities[i], t);
+      const vel = velocities[i];
+      let pos;
+      if (usePattern) {
+        const g = globalSlotBase + i;
+        coord.getWorldTarget(_patternPos, g);
+        _burstEnd.copy(restPos).addScaledVector(vel, 0.3);
+        if (t < T_BURST_END) {
+          const phase = t / T_BURST_END;
+          const decay = 1 - phase * 0.7;
+          _fragPos.copy(restPos).addScaledVector(vel, phase * decay);
+        } else if (t < T_PATTERN_END) {
+          const uP = (t - T_BURST_END) / (T_PATTERN_END - T_BURST_END);
+          _fragPos.lerpVectors(_burstEnd, _patternPos, uP);
+        } else {
+          const uR = (t - T_PATTERN_END) / (1 - T_PATTERN_END);
+          _fragPos.lerpVectors(_patternPos, restPos, uR);
+        }
+        pos = _fragPos;
+      } else {
+        pos = computeFragmentPosition(restPos, vel, t);
+      }
       quatFromTumbleVecInto(tumbles[i], ang, _quatB);
       let q;
-      if (t <= 0.5) {
+      if (t <= tQuatSplit) {
         q = restQuat.clone().multiply(_quatB);
       } else {
-        const u = (t - 0.5) / 0.5;
+        const u = (t - tQuatSplit) / (1 - tQuatSplit);
         quatFromTumbleVecInto(tumbles[i], angPeak, _quatB);
         const qAtPeak = restQuat.clone().multiply(_quatB);
         q = qAtPeak.slerp(restQuat, u);
@@ -302,8 +362,12 @@ export default class ShardShatter {
 
   getReturnProgress(index) {
     const state = this._shardStates.get(index);
-    if (!state || state.t <= 0.5) return 0;
-    return (state.t - 0.5) / 0.5;
+    if (!state) return 0;
+    const coord = this.patternCoordinator;
+    const usePattern = coord?.finalized && coord.totalFragmentCount > 0;
+    const t0 = usePattern ? T_PATTERN_END : 0.5;
+    if (state.t <= t0) return 0;
+    return (state.t - t0) / (1 - t0);
   }
 
   dispose() {

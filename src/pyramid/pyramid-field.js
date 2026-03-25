@@ -1,10 +1,14 @@
 import * as THREE from "three";
-import ShardShatter from "./shard-shatter.js";
+import ShardShatter, {
+  FRAGMENTS_PER_LEVEL,
+  intensityToDepth,
+} from "./shard-shatter.js";
+import FragmentPatternCoordinator from "./fragment-pattern-coordinator.js";
 
 const _up = new THREE.Vector3(0, 1, 0);
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 /** Bars between all-shard waves; one shatter animation lasts this many bars. */
-const SHATTER_CYCLE_BARS = 8;
+export const SHATTER_CYCLE_BARS = 9;
 
 export default class PyramidField {
   constructor({
@@ -17,10 +21,30 @@ export default class PyramidField {
     orbitPulseSpeed = 0.3,
     maxSimultaneousShatter = 15,
     beatSensitivity = 1.0,
+    /** 0 = pyramids only (no shatter wave); 1 = max fragments + expansion. */
+    shatterAmount = 1,
+    /** 0 sphere shell · 1 Saturn rings · 2 galaxy swirls */
+    patternMode = 0,
+    pattern = {},
   } = {}) {
     this.config = {
       count, orbitRadius, size, rotationSpeed, shardDrift,
       tweenSpeed, orbitPulseSpeed, maxSimultaneousShatter, beatSensitivity,
+      shatterAmount,
+      patternMode,
+      pattern: {
+        ringRadiusScale: 1,
+        ringAzimuthJitter: 0.14,
+        ringRadialJitter: 0.045,
+        ringVerticalJitter: 0.04,
+        galaxyBulgeFrac: 0.12,
+        galaxyBulgeRadius: 0.22,
+        galaxyArmInner: 0.28,
+        galaxyArmOuter: 1.15,
+        galaxySpiralTightness: 0.11,
+        galaxyArmSweepTurns: 5.2,
+        ...pattern,
+      },
     };
     this.group = new THREE.Group();
     this.material = new THREE.MeshStandardMaterial({
@@ -42,6 +66,8 @@ export default class PyramidField {
     this._keyframes = null;
     this._tweenTime = 0;
     this._tweenDuration = 1;
+    this._shatterWaveIndex = 0;
+    this._patternCoordinator = new FragmentPatternCoordinator();
     this.rebuild();
   }
 
@@ -55,6 +81,7 @@ export default class PyramidField {
     this._shatter = new ShardShatter({
       maxShards: count,
       material: this.material,
+      patternCoordinator: this._patternCoordinator,
     });
     this._shards.forEach((s, i) => {
       this._shatter.registerShard(
@@ -105,11 +132,12 @@ export default class PyramidField {
   }
 
   _tickShatterTimer(deltaTime) {
+    if (this.config.shatterAmount <= 0) return;
     const period = this._barDuration * SHATTER_CYCLE_BARS;
     this._timeSinceLastShatter += deltaTime;
     if (this._timeSinceLastShatter >= period) {
       this._timeSinceLastShatter -= period;
-      this._triggerShatter(0.5);
+      this._triggerShatter();
     }
   }
 
@@ -136,7 +164,28 @@ export default class PyramidField {
     if (barDuration != null) this._barDuration = barDuration;
   }
 
-  _triggerShatter(intensity) {
+  _triggerShatter() {
+    const intensity = this.config.shatterAmount;
+    if (intensity <= 0) return;
+    const depth = intensityToDepth(intensity);
+    const fragPerShard = FRAGMENTS_PER_LEVEL[depth - 1];
+    this._shatterWaveIndex += 1;
+    const patternId = this.config.patternMode;
+    const center = new THREE.Vector3(0, 0, 0);
+    this._patternCoordinator.beginWave({
+      waveIndex: this._shatterWaveIndex,
+      patternId,
+      center,
+      params: {
+        orbitRadius: this.config.orbitRadius,
+        ...this.config.pattern,
+      },
+    });
+    for (let i = 0; i < this._shards.length; i++) {
+      this._patternCoordinator.registerShard(i, fragPerShard);
+    }
+    this._patternCoordinator.finalizeWave();
+
     for (let i = 0; i < this._shards.length; i++) {
       const m = this._shards[i].mesh;
       this._shatter.syncShardTransform(i, m.position, m.quaternion, m.scale.x);
@@ -223,7 +272,36 @@ export default class PyramidField {
       .name("Orbit Pulse Speed");
     folder.add(this.config, "maxSimultaneousShatter", 1, 30, 1)
       .name("Max Shatter");
+    folder.add(this.config, "shatterAmount", 0, 1, 0.01)
+      .name("Shatter amount");
+    folder.add(this.config, "patternMode", { Sphere: 0, Rings: 1, Swirls: 2 })
+      .name("Pattern");
     folder.open();
+
+    const pat = this.config.pattern;
+    const patternFolder = gui.addFolder("Shatter pattern");
+    patternFolder.add(pat, "ringRadiusScale", 0.5, 2.0, 0.01)
+      .name("Ring band scale");
+    patternFolder.add(pat, "ringAzimuthJitter", 0, 0.5, 0.01)
+      .name("Ring azimuth jitter");
+    patternFolder.add(pat, "ringRadialJitter", 0, 0.15, 0.005)
+      .name("Ring radial jitter");
+    patternFolder.add(pat, "ringVerticalJitter", 0, 0.2, 0.005)
+      .name("Ring thickness (Y)");
+    patternFolder.add(pat, "galaxyBulgeFrac", 0.02, 0.35, 0.01)
+      .name("Galaxy bulge %");
+    patternFolder.add(pat, "galaxyBulgeRadius", 0.08, 0.45, 0.01)
+      .name("Galaxy bulge radius");
+    patternFolder.add(pat, "galaxyArmInner", 0.1, 0.7, 0.01)
+      .name("Galaxy arm inner");
+    patternFolder.add(pat, "galaxyArmOuter", 0.5, 2.0, 0.01)
+      .name("Galaxy arm outer");
+    patternFolder.add(pat, "galaxySpiralTightness", 0.04, 0.35, 0.01)
+      .name("Galaxy spiral tight");
+    patternFolder.add(pat, "galaxyArmSweepTurns", 2, 12, 0.1)
+      .name("Galaxy arm turns");
+    patternFolder.open();
+
     return folder;
   }
 

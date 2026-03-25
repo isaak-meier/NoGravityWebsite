@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { describe, it, expect, vi } from 'vitest';
 import * as THREE from 'three';
-import PyramidField from './pyramid-field.js';
+import PyramidField, { SHATTER_CYCLE_BARS } from './pyramid-field.js';
 import ShardShatter from './shard-shatter.js';
 
 describe('PyramidField', () => {
@@ -133,7 +133,7 @@ describe('PyramidField', () => {
       const pf = new PyramidField({ count: 2 });
       const spy = vi.spyOn(pf._shatter, 'update');
       pf.update(0.016);
-      expect(spy).toHaveBeenCalledWith(0.016, pf._barDuration * 8);
+      expect(spy).toHaveBeenCalledWith(0.016, pf._barDuration * SHATTER_CYCLE_BARS);
     });
   });
 
@@ -393,7 +393,8 @@ describe('PyramidField', () => {
     it('tween skips shattered shards', () => {
       const pf = new PyramidField({ count: 10 });
       pf.setKeyframes([makeSpectrum(0), makeSpectrum(1.0)], 6);
-      pf._triggerShatter(0.5);
+      pf.config.shatterAmount = 0.5;
+      pf._triggerShatter();
       const shatteredIdx = pf._shards.findIndex((_, i) => pf._shatter.isShattered(i));
       if (shatteredIdx >= 0) {
         expect(pf._shards[shatteredIdx].mesh.visible).toBe(false);
@@ -442,7 +443,7 @@ describe('PyramidField', () => {
 
     it('restores shard visibility after recombination', () => {
       const pf = new PyramidField({ count: 10 });
-      const period = pf._barDuration * 8;
+      const period = pf._barDuration * SHATTER_CYCLE_BARS;
       pf.update(period + 0.01);
       pf.update(period + 0.5);
       pf._shards.forEach(s => expect(s.mesh.visible).toBe(true));
