@@ -407,6 +407,7 @@ describe('PyramidField', () => {
     it('applies tween energy to non-shattered shards', () => {
       const pf = new PyramidField({ count: 5 });
       pf.setKeyframes([makeSpectrum(0), makeSpectrum(1.0)], 10);
+      pf._timeSinceLastShatter = 0;
       const scaleBefore = pf._shards[0].mesh.scale.x;
       pf.update(1.0);
       expect(pf._shards[0].mesh.scale.x).not.toBeCloseTo(scaleBefore, 3);
@@ -419,26 +420,21 @@ describe('PyramidField', () => {
       expect(pf._shatter).toBeInstanceOf(ShardShatter);
     });
 
-    it('triggers shatters on timer tick', () => {
+    it('triggers shatters on first update (timer primed for immediate first wave)', () => {
       const pf = new PyramidField({ count: 10 });
-      const period = pf._barDuration * 8;
-      pf.update(period - 0.01);
+      expect(pf._shards.every((_, i) => !pf._shatter.isShattered(i))).toBe(true);
       pf.update(0.02);
       const anyShattered = pf._shards.some((_, i) => pf._shatter.isShattered(i));
       expect(anyShattered).toBe(true);
     });
 
-    it('does not shatter before timer expires', () => {
+    it('is not shattered before first update', () => {
       const pf = new PyramidField({ count: 10 });
-      pf.update(0.1);
-      const anyShattered = pf._shards.some((_, i) => pf._shatter.isShattered(i));
-      expect(anyShattered).toBe(false);
+      expect(pf._shards.every((_, i) => !pf._shatter.isShattered(i))).toBe(true);
     });
 
     it('hides shard mesh when shattered', () => {
       const pf = new PyramidField({ count: 10 });
-      const period = pf._barDuration * 8;
-      pf.update(period - 0.01);
       pf.update(0.02);
       const hidden = pf._shards.filter(s => !s.mesh.visible);
       expect(hidden.length).toBeGreaterThan(0);

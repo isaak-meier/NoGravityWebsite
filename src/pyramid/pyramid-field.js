@@ -39,7 +39,6 @@ export default class PyramidField {
     this._orbitTime = 0;
     this._orbitMin = 1.5;
     this._orbitMax = 3;
-    this._timeSinceLastShatter = 0;
     this._keyframes = null;
     this._tweenTime = 0;
     this._tweenDuration = 1;
@@ -63,6 +62,11 @@ export default class PyramidField {
       );
     });
     this.group.add(this._shatter.group);
+    this._primeShatterTimerForImmediateFirstWave();
+  }
+
+  _primeShatterTimerForImmediateFirstWave() {
+    this._timeSinceLastShatter = this._barDuration * SHATTER_CYCLE_BARS;
   }
 
   _addShard(i, count) {
