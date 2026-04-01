@@ -4,6 +4,7 @@ import ShardShatter, {
   intensityToDepth,
 } from "./shard-shatter.js";
 import FragmentPatternCoordinator from "./fragment-pattern-coordinator.js";
+import { attachKnobContinuous, attachKnobDiscrete3 } from "../ui/gui-knob.js";
 
 const _up = new THREE.Vector3(0, 1, 0);
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
@@ -23,15 +24,21 @@ export default class PyramidField {
     beatSensitivity = 1.0,
     /** 0 = pyramids only (no shatter wave); 1 = max fragments + expansion. */
     shatterAmount = 1,
+    /** When false, shatter timer / simulation / triggers are skipped (pyramids only). */
+    shatterSubsystemEnabled = true,
     /** 0 sphere shell · 1 Saturn rings · 2 galaxy swirls */
     patternMode = 0,
+    /** When true, shatter layout seed ignores wave index (stable across waves once user picks a pattern). */
+    lockShatterPatternSeed = false,
     pattern = {},
   } = {}) {
     this.config = {
       count, orbitRadius, size, rotationSpeed, shardDrift,
       tweenSpeed, orbitPulseSpeed, maxSimultaneousShatter, beatSensitivity,
       shatterAmount,
+      shatterSubsystemEnabled,
       patternMode,
+      lockShatterPatternSeed,
       pattern: {
         ringRadiusScale: 1,
         ringAzimuthJitter: 0.14,
@@ -122,9 +129,9 @@ export default class PyramidField {
     this.group.rotation.y += deltaTime * this.config.rotationSpeed;
     const r = this._updateBreathing(deltaTime);
     this._updateShardPositions(r, deltaTime);
-    if (this._shatter) {
+    if (this._shatter && this.config.shatterSubsystemEnabled) {
       this._tickShatterTimer(deltaTime);
-      this._syncShatterPositions();
+      this._syncShatterPositions(deltaTime);
       this._shatter.update(deltaTime, this._barDuration * SHATTER_CYCLE_BARS);
       this._restoreShardVisibilityAfterShatter();
     }
@@ -141,11 +148,11 @@ export default class PyramidField {
     }
   }
 
-  _syncShatterPositions() {
+  _syncShatterPositions(deltaTime) {
     for (let i = 0; i < this._shards.length; i++) {
       if (this._shatter.isShattered(i)) {
         const m = this._shards[i].mesh;
-        this._shatter.syncShardTransform(i, m.position, m.quaternion, m.scale.x);
+        this._shatter.syncShardTransform(i, m.position, m.quaternion, m.scale.x, deltaTime);
       }
     }
   }
@@ -164,7 +171,14 @@ export default class PyramidField {
     if (barDuration != null) this._barDuration = barDuration;
   }
 
+  /** Start a full shatter wave immediately (e.g. user tapped the planet on mobile). */
+  triggerManualShatter() {
+    if (!this.config.shatterSubsystemEnabled) return;
+    this._triggerShatter();
+  }
+
   _triggerShatter() {
+    if (!this.config.shatterSubsystemEnabled) return;
     const intensity = this.config.shatterAmount;
     if (intensity <= 0) return;
     const depth = intensityToDepth(intensity);
@@ -179,6 +193,7 @@ export default class PyramidField {
       params: {
         orbitRadius: this.config.orbitRadius,
         ...this.config.pattern,
+        lockShatterPatternSeed: this.config.lockShatterPatternSeed,
       },
     });
     for (let i = 0; i < this._shards.length; i++) {
@@ -188,7 +203,7 @@ export default class PyramidField {
 
     for (let i = 0; i < this._shards.length; i++) {
       const m = this._shards[i].mesh;
-      this._shatter.syncShardTransform(i, m.position, m.quaternion, m.scale.x);
+      this._shatter.syncShardTransform(i, m.position, m.quaternion, m.scale.x, null);
       m.visible = false;
       this._shatter.triggerShatter(i, intensity);
     }
@@ -272,10 +287,24 @@ export default class PyramidField {
       .name("Orbit Pulse Speed");
     folder.add(this.config, "maxSimultaneousShatter", 1, 30, 1)
       .name("Max Shatter");
-    folder.add(this.config, "shatterAmount", 0, 1, 0.01)
-      .name("Shatter amount");
-    folder.add(this.config, "patternMode", { Sphere: 0, Rings: 1, Swirls: 2 })
-      .name("Pattern");
+    attachKnobContinuous(folder, {
+      label: "Shatter amount",
+      object: this.config,
+      key: "shatterAmount",
+      min: 0,
+      max: 1,
+      step: 0.01,
+      format: v => v.toFixed(2),
+    });
+    attachKnobDiscrete3(folder, {
+      label: "Pattern",
+      object: this.config,
+      key: "patternMode",
+      labels: ["Sphere", "Rings", "Swirls"],
+      onChange: () => {
+        this.config.lockShatterPatternSeed = true;
+      },
+    });
     folder.open();
 
     const pat = this.config.pattern;

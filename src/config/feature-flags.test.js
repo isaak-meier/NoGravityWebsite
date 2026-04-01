@@ -7,7 +7,7 @@ describe('feature-flags', () => {
 
   describe('isEnabled', () => {
     it('returns true for flags that are truthy', () => {
-      // ENABLE_GUI defaults to true in non-production (test env)
+      // ENABLE_GUI defaults to true
       expect(isEnabled('ENABLE_GUI')).toBe(true);
     });
 

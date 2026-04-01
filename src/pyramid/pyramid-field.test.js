@@ -135,6 +135,14 @@ describe('PyramidField', () => {
       pf.update(0.016);
       expect(spy).toHaveBeenCalledWith(0.016, pf._barDuration * SHATTER_CYCLE_BARS);
     });
+
+    it('does not call _shatter.update when shatterSubsystemEnabled is false', () => {
+      const pf = new PyramidField({ count: 2 });
+      pf.config.shatterSubsystemEnabled = false;
+      const spy = vi.spyOn(pf._shatter, 'update');
+      pf.update(0.016);
+      expect(spy).not.toHaveBeenCalled();
+    });
   });
 
   // ── applySpectrum ──────────────────────────────────────────────────────
@@ -297,6 +305,7 @@ describe('PyramidField', () => {
           return { name: vi.fn().mockReturnValue({ onChange: vi.fn() }) };
         }),
         open: vi.fn(),
+        $children: document.createElement("div"),
       };
       const mockGui = { addFolder: vi.fn(() => mockFolder) };
       pf.setupGUI(mockGui);
@@ -316,6 +325,7 @@ describe('PyramidField', () => {
       const mockFolder = {
         add: vi.fn().mockReturnValue({ name: vi.fn().mockReturnValue({ onChange: vi.fn() }) }),
         open: vi.fn(),
+        $children: document.createElement("div"),
       };
       const mockGui = { addFolder: vi.fn(() => mockFolder) };
       pf.setupGUI(mockGui);
@@ -327,6 +337,7 @@ describe('PyramidField', () => {
       const mockFolder = {
         add: vi.fn().mockReturnValue({ name: vi.fn().mockReturnValue({ onChange: vi.fn() }) }),
         open: vi.fn(),
+        $children: document.createElement("div"),
       };
       const mockGui = { addFolder: vi.fn(() => mockFolder) };
       const result = pf.setupGUI(mockGui);
@@ -416,6 +427,19 @@ describe('PyramidField', () => {
   });
 
   describe('shatter integration', () => {
+    it('triggerManualShatter starts a wave like _triggerShatter', () => {
+      const pf = new PyramidField({ count: 8, shatterAmount: 0.9 });
+      pf.triggerManualShatter();
+      expect(pf._shards.some((_, i) => pf._shatter.isShattered(i))).toBe(true);
+    });
+
+    it('triggerManualShatter does nothing when shatterSubsystemEnabled is false', () => {
+      const pf = new PyramidField({ count: 8, shatterAmount: 0.9 });
+      pf.config.shatterSubsystemEnabled = false;
+      pf.triggerManualShatter();
+      expect(pf._shards.every((_, i) => !pf._shatter.isShattered(i))).toBe(true);
+    });
+
     it('creates a ShardShatter instance internally', () => {
       const pf = new PyramidField({ count: 10 });
       expect(pf._shatter).toBeInstanceOf(ShardShatter);

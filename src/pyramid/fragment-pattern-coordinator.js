@@ -30,7 +30,8 @@ export default class FragmentPatternCoordinator {
     this._patternId = patternId;
     this._center.copy(center);
     this._params = params ? { ...params } : {};
-    this._seed = waveIndex * 7919 + patternId * 31;
+    const seedWave = params?.lockShatterPatternSeed ? 0 : waveIndex;
+    this._seed = seedWave * 7919 + patternId * 31;
     this._shardMap.clear();
     this._totalN = 0;
     this._finalized = false;

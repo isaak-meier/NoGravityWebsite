@@ -161,6 +161,7 @@ describe("AudioFFT", () => {
       const stream = a.createStream();
       expect(typeof stream.start).toBe("function");
       expect(typeof stream.stop).toBe("function");
+      expect(typeof stream.pump).toBe("function");
       expect(typeof stream.onData).toBe("function");
     });
 
@@ -174,6 +175,7 @@ describe("AudioFFT", () => {
       vi.useFakeTimers();
       try {
         stream.start();
+        stream.pump();
         vi.advanceTimersByTime(50);
         expect(spy).toHaveBeenCalled();
         const data = spy.mock.calls[0][0];
@@ -205,8 +207,9 @@ describe("AudioFFT", () => {
       try {
         stream.start();
         stream.start(); // second call should be ignored
+        stream.pump();
         vi.advanceTimersByTime(50);
-        // should still only have one data frame per RAF tick, not double
+        // should still only have one data frame per pump, not double
         const callCount = spy.mock.calls.length;
         expect(callCount).toBeGreaterThanOrEqual(1);
       } finally {
@@ -225,9 +228,11 @@ describe("AudioFFT", () => {
       vi.useFakeTimers();
       try {
         stream.start();
+        stream.pump();
         vi.advanceTimersByTime(20);
         const countBefore = spy.mock.calls.length;
         stream.stop();
+        stream.pump();
         vi.advanceTimersByTime(100);
         // no new calls after stop
         expect(spy.mock.calls.length).toBe(countBefore);
@@ -256,6 +261,7 @@ describe("AudioFFT", () => {
       vi.useFakeTimers();
       try {
         stream.start();
+        stream.pump();
         vi.advanceTimersByTime(20);
         expect(spy1).toHaveBeenCalled();
         expect(spy2).toHaveBeenCalled();

@@ -54,4 +54,22 @@ describe('FragmentPatternCoordinator', () => {
     expect(out.length()).toBeGreaterThan(0.1);
     expect(Number.isFinite(out.x)).toBe(true);
   });
+
+  it('ignores wave index in layout seed when lockShatterPatternSeed is true', () => {
+    const center = new THREE.Vector3(0, 0, 0);
+    const params = { orbitRadius: 2, lockShatterPatternSeed: true };
+    const cLo = new FragmentPatternCoordinator();
+    cLo.beginWave({ waveIndex: 1, patternId: PATTERN_RING, center, params });
+    cLo.registerShard(0, 12);
+    cLo.finalizeWave();
+    const cHi = new FragmentPatternCoordinator();
+    cHi.beginWave({ waveIndex: 500, patternId: PATTERN_RING, center, params });
+    cHi.registerShard(0, 12);
+    cHi.finalizeWave();
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    cLo.getWorldTarget(a, 5);
+    cHi.getWorldTarget(b, 5);
+    expect(a.distanceTo(b)).toBeLessThan(1e-6);
+  });
 });

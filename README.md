@@ -1,6 +1,6 @@
 # NoGravityWebsite
 
-Minimal static Three.js site with optional audio-reactive visuals and Google Drive audio loading.
+NXGRXVIY website. Planet with shards, audio loading from google drive, some fun math. 
 
 ## Run locally
 
@@ -8,21 +8,7 @@ Minimal static Three.js site with optional audio-reactive visuals and Google Dri
 - Start dev server: `npm start`
 - Open: `http://localhost:3000`
 
-## Customer-facing auto-load from Google Drive
+## Google Drive auto-load (optional)
 
-To auto-load the first song from a preselected Google Drive folder at page load, update `src/app-config.js`:
+Do not commit API keys. Copy `src/config/app-config.local.json.example` to `src/config/app-config.local.json` (gitignored), then set `folderId` and optionally `apiKey`. The app merges that JSON over defaults in `src/config/app-config.js`.
 
-```js
-const APP_CONFIG = {
-	googleDrive: {
-		folderId: "YOUR_FOLDER_ID",
-		apiKey: "YOUR_PUBLIC_API_KEY",
-	},
-};
-```
-
-Notes:
-
-- Audio files are listed with `name_natural` ordering and the first file is auto-loaded.
-- Browser autoplay policies may require a user click before audio starts, but the file is still loaded and ready.
-- For customer-facing usage, your folder/files must be accessible for the configured API key scenario.

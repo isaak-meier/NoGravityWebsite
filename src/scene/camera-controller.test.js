@@ -110,6 +110,16 @@ describe('CameraController', () => {
       expect(ctrl.mouseX).not.toBe(0);
     });
 
+    it('does not use mousemove for look when mobile (avoids emulated-pointer drift)', () => {
+      const c = makeContainer();
+      c.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 600 });
+      const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
+      const ctrl = new CameraController(c, cam, { isMobile: true });
+      c.dispatchEvent(new MouseEvent('mousemove', { clientX: 600, clientY: 300 }));
+      expect(ctrl.mouseX).toBe(0);
+      expect(ctrl.mouseY).toBe(0);
+    });
+
     it('tracks WASD keydown/keyup', () => {
       const c = makeContainer();
       const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
@@ -141,7 +151,46 @@ describe('CameraController', () => {
     });
   });
 
+  describe('touch orbit (mobile)', () => {
+    it('maps one full horizontal swipe to configured yaw per full drag (linear)', () => {
+      const c = makeContainer(800, 600);
+      const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
+      const ctrl = new CameraController(c, cam, { isMobile: true });
+      ctrl.followPlanet = null;
+      const degPerFullSwipe = 18;
+      const fullTurn = (2 * Math.PI * degPerFullSwipe) / 360;
+      ctrl._applyTouchOrbit(800, 0, c);
+      expect(cam.rotation.y).toBeCloseTo(-fullTurn, 5);
+    });
+
+    it('accumulates follow yaw by one full swipe', () => {
+      const c = makeContainer(800, 600);
+      const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
+      const ctrl = new CameraController(c, cam, { isMobile: true });
+      ctrl.followPlanet = { mesh: new THREE.Mesh(), def: { radius: 1 } };
+      const degPerFullSwipe = 18;
+      const fullTurn = (2 * Math.PI * degPerFullSwipe) / 360;
+      ctrl._applyTouchOrbit(800, 0, c);
+      expect(ctrl._followOrbitYaw).toBeCloseTo(-fullTurn, 5);
+    });
+  });
+
   describe('update', () => {
+    it('clears stale mouse look inputs when leaving follow mode', () => {
+      const c = makeContainer();
+      const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
+      const ctrl = new CameraController(c, cam);
+      const planet = { mesh: new THREE.Mesh(), def: { radius: 1 } };
+      ctrl.followPlanet = planet;
+      ctrl.update(0.016);
+      ctrl.mouseX = 0.5;
+      ctrl.mouseY = -0.3;
+      ctrl.followPlanet = null;
+      ctrl.update(0.016);
+      expect(ctrl.mouseX).toBe(0);
+      expect(ctrl.mouseY).toBe(0);
+    });
+
     it('moves camera forward when W key is pressed', () => {
       const c = makeContainer();
       const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
@@ -202,7 +251,7 @@ describe('CameraController', () => {
       expect(sun.scale.x).toBeLessThan(before);
     });
 
-    it('lerps sun scale back up when not following', () => {
+    it('keeps sun at small scale when not following', () => {
       const c = makeContainer();
       const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
       const ctrl = new CameraController(c, cam);
@@ -212,7 +261,7 @@ describe('CameraController', () => {
       ctrl.sun = sun;
       ctrl.followPlanet = null;
       ctrl.update(0.016);
-      expect(sun.scale.x).toBeGreaterThan(0.04);
+      expect(sun.scale.x).toBe(0.04);
     });
 
     it('lerps sunLight intensity when following', () => {
@@ -229,7 +278,7 @@ describe('CameraController', () => {
   });
 
   describe('setupFollowHandler', () => {
-    it('registers a click listener on renderer domElement', () => {
+    it('registers click and touch listeners on renderer domElement', () => {
       const c = makeContainer();
       const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
       const ctrl = new CameraController(c, cam);
@@ -238,6 +287,9 @@ describe('CameraController', () => {
       const spy = vi.spyOn(rend.domElement, 'addEventListener');
       ctrl.setupFollowHandler(rend, ss.planets);
       expect(spy).toHaveBeenCalledWith('click', expect.any(Function));
+      expect(spy).toHaveBeenCalledWith('touchstart', expect.any(Function), { passive: true });
+      expect(spy).toHaveBeenCalledWith('touchmove', expect.any(Function), { passive: true });
+      expect(spy).toHaveBeenCalledWith('touchend', expect.any(Function), { passive: true });
     });
   });
 });

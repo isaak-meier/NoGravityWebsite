@@ -6,6 +6,32 @@ class AudioManager {
     this.fft = null;
     this.audioEl = null;
     this._liveStream = null;
+    /** @type {number | null} */
+    this._pumpRaf = null;
+  }
+
+  _startPumpLoop() {
+    this._stopPumpLoop();
+    const loop = () => {
+      if (!this.stream) {
+        this._pumpRaf = null;
+        return;
+      }
+      if (typeof this.stream.pump !== "function") {
+        this._pumpRaf = null;
+        return;
+      }
+      this.stream.pump();
+      this._pumpRaf = requestAnimationFrame(loop);
+    };
+    this._pumpRaf = requestAnimationFrame(loop);
+  }
+
+  _stopPumpLoop() {
+    if (this._pumpRaf != null) {
+      cancelAnimationFrame(this._pumpRaf);
+      this._pumpRaf = null;
+    }
   }
 
   async toggle() {
@@ -15,11 +41,17 @@ class AudioManager {
         await this.fft.context.resume();
       }
       await this.audioEl.play();
-      if (this.stream) this.stream.start();
+      if (this.stream) {
+        this.stream.start();
+        this._startPumpLoop();
+      }
       return true;
     }
     this.audioEl.pause();
-    if (this.stream) this.stream.stop();
+    if (this.stream) {
+      this.stream.stop();
+      this._stopPumpLoop();
+    }
     return false;
   }
 
@@ -56,6 +88,7 @@ class AudioManager {
     const stream = fft.createStream();
     stream.onData(onSpectrum);
     stream.start();
+    this._startPumpLoop();
     this.stream = stream;
   }
 
@@ -67,6 +100,7 @@ class AudioManager {
   }
 
   stop() {
+    this._stopPumpLoop();
     if (this.stream) {
       this.stream.stop();
       this.stream = null;

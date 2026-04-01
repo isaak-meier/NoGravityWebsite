@@ -3,7 +3,7 @@
 // https://vitest.dev/guide/environment.html#jsdom
 /** @vitest-environment jsdom */
 
-import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from 'vitest';
 
 // we need to stub WebGLRenderer because jsdom doesn't support WebGL contexts.
 // Vitest can mock the three module before it's imported elsewhere.
@@ -76,6 +76,8 @@ import {
   animateLoop,
   initScene,
   applySpectrumToParams,
+  BLOOM_STRENGTH_SMOOTH_ALPHA,
+  computeSmoothedPlanetScale,
   createAudioState,
   stopAudio,
   toggleAudioPlayback,
@@ -93,6 +95,22 @@ function makeContainer(w = 100, h = 50) {
   return c;
 }
 
+/** jsdom does not implement CanvasRenderingContext2D; Comet and similar need a minimal 2d stub. */
+function createMockCanvas2dContext(canvas) {
+  const gradient = { addColorStop: () => {} };
+  return {
+    createRadialGradient: () => gradient,
+    createLinearGradient: () => gradient,
+    fillRect: () => {},
+    fillStyle: '',
+    globalAlpha: 1,
+    globalCompositeOperation: 'source-over',
+    canvas,
+  };
+}
+
+let originalGetContext;
+
 describe('three-scene helpers', () => {
   // provide a fake WebGLRenderer so tests run in jsdom without a real GL context
   beforeAll(() => {
@@ -103,6 +121,19 @@ describe('three-scene helpers', () => {
         addListener: () => {},
         removeListener: () => {},
       });
+    }
+    originalGetContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function mockGetContext(type, ...rest) {
+      if (type === '2d') {
+        return createMockCanvas2dContext(this);
+      }
+      return originalGetContext.call(this, type, ...rest);
+    };
+  });
+
+  afterAll(() => {
+    if (originalGetContext) {
+      HTMLCanvasElement.prototype.getContext = originalGetContext;
     }
   });
   beforeEach(() => {
@@ -262,6 +293,12 @@ describe('three-scene helpers', () => {
       expect(material.roughness).toBe(0.7);
       expect(material.clearcoat).toBe(0.5);
     });
+
+    it('stores planetBaseColor clone for bloom-dial brightness scaling', () => {
+      const { material } = createSphere(false);
+      expect(material.userData.planetBaseColor).toBeDefined();
+      expect(material.userData.planetBaseColor.getHex()).toBe(material.color.getHex());
+    });
   });
 
   // ── createStars ───────────────────────────────────────────────────────
@@ -351,7 +388,9 @@ describe('three-scene helpers', () => {
       const fakeMat = new THREE.MeshPhysicalMaterial();
       const fakeBloom = { strength: 1, radius: 0.5, threshold: 0.2 };
       const fakeStars = new THREE.Object3D();
-      setupGUI(fakeMat, fakeBloom, fakeStars);
+      const { gui } = setupGUI(fakeMat, fakeBloom, fakeStars);
+      // autoPlace: false — root is not auto-mounted; attach like initScene does
+      document.body.appendChild(gui.domElement);
       const guiEl = document.querySelector('.lil-gui');
       expect(guiEl).not.toBeNull();
     });
@@ -556,72 +595,103 @@ describe('three-scene helpers', () => {
   // ── applySpectrumToParams ─────────────────────────────────────────────
 
   describe('applySpectrumToParams', () => {
-    it('updates radius based on low frequency average', () => {
+    const bloomBaseline = { multiplier: 1 };
+
+    it('updates radius based on low frequency average (smoothed; GUI does not snap scale)', () => {
       const planetParams = { radius: 1 };
-      const radiusCtrl = { setValue: vi.fn() };
+      const radiusCtrl = { updateDisplay: vi.fn() };
       const bloomPass = { strength: 0, threshold: 0 };
       const material = { reflectivity: 0 };
       const sphere = { scale: { x: 1, setScalar: vi.fn() } };
       const baseRadius = 1;
       // low frequencies are all 1.0
       const spectrum = new Float32Array([1, 1, 1, 0.5, 0.5, 0, 0]);
-      applySpectrumToParams(spectrum, { planetParams, radiusCtrl, bloomPass, material, sphere, baseRadius });
-      // lowAvg = avg of first two elements = 1
-      expect(planetParams.radius).toBeCloseTo(1 + 1 * 0.65); // baseRadius + lowAvg * 0.65
-      expect(radiusCtrl.setValue).toHaveBeenCalledWith(1.65);
-      // lerp from current (1) toward target (1.65) with factor 0.08
-      expect(sphere.scale.setScalar).toHaveBeenCalledWith(expect.closeTo(1 + (1.65 - 1) * 0.08, 4));
+      applySpectrumToParams(spectrum, {
+        planetParams, radiusCtrl, bloomPass, bloomBaseline, material, sphere, baseRadius,
+      });
+      const { smoothedScale, displayRadius } = computeSmoothedPlanetScale(1, baseRadius, 1);
+      expect(planetParams.radius).toBeCloseTo(displayRadius);
+      expect(radiusCtrl.updateDisplay).toHaveBeenCalled();
+      expect(sphere.scale.setScalar).toHaveBeenCalledWith(expect.closeTo(smoothedScale, 4));
     });
 
     it('updates bloom strength from mid frequency average', () => {
       const planetParams = { radius: 1 };
-      const radiusCtrl = { setValue: vi.fn() };
+      const radiusCtrl = { updateDisplay: vi.fn() };
       const bloomPass = { strength: 0, threshold: 0 };
       const material = { reflectivity: 0 };
       const sphere = { scale: { x: 1, setScalar: vi.fn() } };
       const baseRadius = 1;
       const spectrum = new Float32Array([1, 1, 1, 0.5, 0.5, 0, 0]);
-      applySpectrumToParams(spectrum, { planetParams, radiusCtrl, bloomPass, material, sphere, baseRadius });
+      applySpectrumToParams(spectrum, {
+        planetParams, radiusCtrl, bloomPass, bloomBaseline, material, sphere, baseRadius,
+      });
       // midAvg = avg of elements at indices 2,3 = (1+0.5)/2 = 0.75
       expect(bloomPass.strength).toBeCloseTo(0.75 * 3);
     });
 
-    it('updates bloom threshold from high frequency average', () => {
+    it('scales spectrum bloom strength by baseline multiplier', () => {
       const planetParams = { radius: 1 };
-      const radiusCtrl = { setValue: vi.fn() };
+      const radiusCtrl = { updateDisplay: vi.fn() };
       const bloomPass = { strength: 0, threshold: 0 };
       const material = { reflectivity: 0 };
       const sphere = { scale: { x: 1, setScalar: vi.fn() } };
       const baseRadius = 1;
       const spectrum = new Float32Array([1, 1, 1, 0.5, 0.5, 0, 0]);
-      applySpectrumToParams(spectrum, { planetParams, radiusCtrl, bloomPass, material, sphere, baseRadius });
+      applySpectrumToParams(spectrum, {
+        planetParams,
+        radiusCtrl,
+        bloomPass,
+        bloomBaseline: { multiplier: 2 },
+        material,
+        sphere,
+        baseRadius,
+      });
+      expect(bloomPass.strength).toBeCloseTo(0.75 * 3 * 2);
+    });
+
+    it('updates bloom threshold from high frequency average', () => {
+      const planetParams = { radius: 1 };
+      const radiusCtrl = { updateDisplay: vi.fn() };
+      const bloomPass = { strength: 0, threshold: 0 };
+      const material = { reflectivity: 0 };
+      const sphere = { scale: { x: 1, setScalar: vi.fn() } };
+      const baseRadius = 1;
+      const spectrum = new Float32Array([1, 1, 1, 0.5, 0.5, 0, 0]);
+      applySpectrumToParams(spectrum, {
+        planetParams, radiusCtrl, bloomPass, bloomBaseline, material, sphere, baseRadius,
+      });
       // highAvg = avg of elements at indices 4,5,6 = (0.5+0+0)/3
       expect(bloomPass.threshold).toBeCloseTo((0.5 + 0 + 0) / 3);
     });
 
     it('updates material reflectivity from high frequency', () => {
       const planetParams = { radius: 1 };
-      const radiusCtrl = { setValue: vi.fn() };
+      const radiusCtrl = { updateDisplay: vi.fn() };
       const bloomPass = { strength: 0, threshold: 0 };
       const material = { reflectivity: 0 };
       const sphere = { scale: { x: 1, setScalar: vi.fn() } };
       const baseRadius = 1;
       const spectrum = new Float32Array([1, 1, 1, 0.5, 0.5, 0, 0]);
-      applySpectrumToParams(spectrum, { planetParams, radiusCtrl, bloomPass, material, sphere, baseRadius });
+      applySpectrumToParams(spectrum, {
+        planetParams, radiusCtrl, bloomPass, bloomBaseline, material, sphere, baseRadius,
+      });
       const highAvg = (0.5 + 0 + 0) / 3;
       expect(material.reflectivity).toBeCloseTo(0.2 + highAvg * 0.8);
     });
 
     it('handles all-zero spectrum', () => {
       const planetParams = { radius: 1 };
-      const radiusCtrl = { setValue: vi.fn() };
+      const radiusCtrl = { updateDisplay: vi.fn() };
       const bloomPass = { strength: 0, threshold: 0 };
       const material = { reflectivity: 0 };
       const sphere = { scale: { x: 1, setScalar: vi.fn() } };
       const baseRadius = 0.9;
       const spectrum = new Float32Array(12); // all zeros
-      applySpectrumToParams(spectrum, { planetParams, radiusCtrl, bloomPass, material, sphere, baseRadius });
-      // with all zeros: radius = baseRadius, bloom = 0, reflectivity = 0.2
+      applySpectrumToParams(spectrum, {
+        planetParams, radiusCtrl, bloomPass, bloomBaseline, material, sphere, baseRadius,
+      });
+      // with all zeros: target radius = baseRadius, smoothed stays at current scale 1 → display = baseRadius
       expect(planetParams.radius).toBeCloseTo(0.9);
       expect(bloomPass.strength).toBeCloseTo(0);
       expect(material.reflectivity).toBeCloseTo(0.2);
@@ -629,14 +699,17 @@ describe('three-scene helpers', () => {
 
     it('handles all-one spectrum (max levels)', () => {
       const planetParams = { radius: 1 };
-      const radiusCtrl = { setValue: vi.fn() };
+      const radiusCtrl = { updateDisplay: vi.fn() };
       const bloomPass = { strength: 0, threshold: 0 };
       const material = { reflectivity: 0 };
       const sphere = { scale: { x: 1, setScalar: vi.fn() } };
       const baseRadius = 0.9;
       const spectrum = new Float32Array(12).fill(1.0);
-      applySpectrumToParams(spectrum, { planetParams, radiusCtrl, bloomPass, material, sphere, baseRadius });
-      expect(planetParams.radius).toBeCloseTo(0.9 + 1 * 0.65); // 1.55
+      applySpectrumToParams(spectrum, {
+        planetParams, radiusCtrl, bloomPass, bloomBaseline, material, sphere, baseRadius,
+      });
+      const { displayRadius } = computeSmoothedPlanetScale(1, baseRadius, 1);
+      expect(planetParams.radius).toBeCloseTo(displayRadius);
       expect(bloomPass.strength).toBeCloseTo(3);
       expect(bloomPass.threshold).toBeCloseTo(1);
       expect(material.reflectivity).toBeCloseTo(1.0);
@@ -651,7 +724,9 @@ describe('three-scene helpers', () => {
       const spectrum = new Float32Array([0.5, 0.5, 0.5]);
       // should not throw when radiusCtrl is null
       expect(() => {
-        applySpectrumToParams(spectrum, { planetParams, radiusCtrl: null, bloomPass, material, sphere, baseRadius });
+        applySpectrumToParams(spectrum, {
+          planetParams, radiusCtrl: null, bloomPass, bloomBaseline, material, sphere, baseRadius,
+        });
       }).not.toThrow();
     });
 
@@ -662,18 +737,104 @@ describe('three-scene helpers', () => {
       const sphere = { scale: { x: 1, setScalar: vi.fn() } };
       expect(() => {
         applySpectrumToParams(new Float32Array([0.5]), {
-          planetParams, radiusCtrl: null, bloomPass, material, sphere, baseRadius: 1,
+          planetParams,
+          radiusCtrl: null,
+          bloomPass,
+          bloomBaseline,
+          material,
+          sphere,
+          baseRadius: 1,
         });
       }).not.toThrow();
+    });
+
+    it('smooths bloom strength toward FFT×dial target when bloomSmooth is provided', () => {
+      const planetParams = { radius: 1 };
+      const radiusCtrl = { updateDisplay: vi.fn() };
+      const bloomPass = { strength: 0, threshold: 0 };
+      const material = { reflectivity: 0 };
+      const sphere = { scale: { x: 1, setScalar: vi.fn() } };
+      const baseRadius = 1;
+      const bloomSmooth = { strength: 0, lastMultiplier: 1 };
+      const spectrum = new Float32Array([1, 1, 1, 0.5, 0.5, 0, 0]);
+      applySpectrumToParams(spectrum, {
+        planetParams,
+        radiusCtrl,
+        bloomPass,
+        bloomBaseline,
+        bloomSmooth,
+        material,
+        sphere,
+        baseRadius,
+      });
+      const target = 0.75 * 3;
+      expect(bloomPass.strength).toBeCloseTo(0 + BLOOM_STRENGTH_SMOOTH_ALPHA * (target - 0));
+    });
+
+    it('scales planet albedo from bloom dial when planetBaseColor is set', () => {
+      const base = new THREE.Color(0.5, 0.5, 0.5);
+      const material = {
+        reflectivity: 0,
+        color: base.clone(),
+        userData: { planetBaseColor: base.clone() },
+      };
+      const planetParams = { radius: 1 };
+      const radiusCtrl = { updateDisplay: vi.fn() };
+      const bloomPass = { strength: 0, threshold: 0 };
+      const sphere = { scale: { x: 1, setScalar: vi.fn() } };
+      const spectrum = new Float32Array([1, 1, 1, 0.5, 0.5, 0, 0]);
+      applySpectrumToParams(spectrum, {
+        planetParams,
+        radiusCtrl,
+        bloomPass,
+        bloomBaseline: { multiplier: 1 },
+        material,
+        sphere,
+        baseRadius: 1,
+      });
+      expect(material.color.r).toBeCloseTo(0.5);
+      applySpectrumToParams(spectrum, {
+        planetParams,
+        radiusCtrl,
+        bloomPass,
+        bloomBaseline: { multiplier: 0 },
+        material,
+        sphere,
+        baseRadius: 1,
+      });
+      expect(material.color.r).toBeCloseTo(0.5 * 0.55);
+    });
+
+    it('snaps bloom strength when dial multiplier changes (dial overwrites smoothed value)', () => {
+      const planetParams = { radius: 1 };
+      const radiusCtrl = { updateDisplay: vi.fn() };
+      const bloomPass = { strength: 0, threshold: 0 };
+      const material = { reflectivity: 0 };
+      const sphere = { scale: { x: 1, setScalar: vi.fn() } };
+      const baseRadius = 1;
+      const bloomSmooth = { strength: 0.99, lastMultiplier: 1 };
+      const spectrum = new Float32Array([1, 1, 1, 0.5, 0.5, 0, 0]);
+      applySpectrumToParams(spectrum, {
+        planetParams,
+        radiusCtrl,
+        bloomPass,
+        bloomBaseline: { multiplier: 2 },
+        bloomSmooth,
+        material,
+        sphere,
+        baseRadius,
+      });
+      expect(bloomPass.strength).toBeCloseTo(0.75 * 3 * 2);
+      expect(bloomSmooth.lastMultiplier).toBe(2);
     });
   });
 
   // ── createAudioState ────────────────────────────────────────────────
 
   describe('createAudioState', () => {
-    it('returns object with null stream, fft, and audioEl', () => {
+    it('returns object with null stream, fft, audioEl, and _liveStream', () => {
       const s = createAudioState();
-      expect(s).toEqual({ stream: null, fft: null, audioEl: null });
+      expect(s).toEqual({ stream: null, fft: null, audioEl: null, _liveStream: null });
     });
 
     it('returns a fresh object each call', () => {
@@ -798,17 +959,17 @@ describe('three-scene helpers', () => {
   // ── createSongPickerDOM ─────────────────────────────────────────────
 
   describe('createSongPickerDOM', () => {
-    it('returns wrapper with folderLabel and driveFilesList', () => {
+    it('returns wrapper with driveFilesList and micBtn', () => {
       const dom = createSongPickerDOM();
       expect(dom.wrapper).toBeInstanceOf(HTMLElement);
-      expect(dom.folderLabel).toBeInstanceOf(HTMLSpanElement);
       expect(dom.driveFilesList).toBeInstanceOf(HTMLSelectElement);
+      expect(dom.micBtn).toBeInstanceOf(HTMLButtonElement);
     });
 
-    it('wrapper contains folderLabel and driveFilesList', () => {
+    it('wrapper contains driveFilesList and micBtn', () => {
       const dom = createSongPickerDOM();
-      expect(dom.wrapper.contains(dom.folderLabel)).toBe(true);
       expect(dom.wrapper.contains(dom.driveFilesList)).toBe(true);
+      expect(dom.wrapper.contains(dom.micBtn)).toBe(true);
     });
 
     it('drive files dropdown is initially hidden', () => {
@@ -816,9 +977,9 @@ describe('three-scene helpers', () => {
       expect(dom.driveFilesList.style.display).toBe('none');
     });
 
-    it('folder label defaults to "Folder: none"', () => {
+    it('mic button defaults to "Mic"', () => {
       const dom = createSongPickerDOM();
-      expect(dom.folderLabel.textContent).toBe('Folder: none');
+      expect(dom.micBtn.textContent).toBe('Mic');
     });
   });
 

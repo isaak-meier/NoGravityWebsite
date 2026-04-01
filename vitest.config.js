@@ -16,4 +16,18 @@ export default defineConfig({
       "realtime-bpm-analyzer": realtimeBpmAnalyzer,
     },
   },
+  test: {
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "text-summary", "html"],
+      reportOnFailure: true,
+      include: ["src/**/*.js"],
+      exclude: [
+        "**/*.test.js",
+        "**/node_modules/**",
+        "src/config/app-config.example.js",
+        "src/config/app-config.js",
+      ],
+    },
+  },
 });

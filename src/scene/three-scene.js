@@ -19,6 +19,11 @@ import CameraController from "./camera-controller.js";
 import AudioManager from "./audio-manager.js";
 import Comet from "./comet.js";
 import BeatDetector from "../audio/beat-detector.js";
+import {
+  computeSmoothedPlanetScale,
+} from "./planet-pulse.js";
+import { attachPlanetInteriorGoop } from "./planet-goop-material.js";
+import { mountScreenDials } from "../ui/screen-dials.js";
 
 async function cleanupDevServiceWorkers() {
   if (typeof window === "undefined") return;
@@ -130,6 +135,7 @@ function createSphere(isMobile) {
     clearcoatRoughness: 0.1,
     reflectivity: 0.9,
   });
+  mat.userData.planetBaseColor = mat.color.clone();
   return { sphere: new THREE.Mesh(geo, mat), material: mat };
 }
 
@@ -199,13 +205,14 @@ function createPlanet(def, isMobile) {
     reflectivity: 0.9,
   });
   const mesh = new THREE.Mesh(geo, mat);
+  const goopMaterial = attachPlanetInteriorGoop(mesh, def, isMobile);
   // Orbit pivot — planet is offset along +X, pivot rotates around Y
   const pivot = new THREE.Group();
   mesh.position.set(def.orbit, 0, 0);
   pivot.add(mesh);
   // Random starting angle so planets aren't all aligned
   pivot.rotation.y = Math.random() * Math.PI * 2;
-  return { mesh, material: mat, pivot, def };
+  return { mesh, material: mat, pivot, def, goopMaterial };
 }
 
 function setupLights(scene) {
@@ -229,7 +236,12 @@ function setupGUI(material, bloomPass, starField) {
   const gui = new GUI({ closeFolders: true, autoPlace: false });
   gui.close();
   const planet = gui.addFolder("Planet");
-  planet.addColor(material, "color");
+  const colorCtrl = planet.addColor(material, "color");
+  colorCtrl.onChange(() => {
+    if (material.userData.planetBaseColor) {
+      material.userData.planetBaseColor.copy(material.color);
+    }
+  });
   planet.add(material, "metalness", 0, 1);
   planet.add(material, "roughness", 0, 1);
   planet.add(material, "clearcoat", 0, 1);
@@ -392,11 +404,11 @@ function setupInteractions(container, camera) {
     mouseY: 0,
     targetZ: camera.position.z,
     keys: { w: false, a: false, s: false, d: false, q: false, e: false },
-    moveSpeed: 30,
+    moveSpeed: 14,
     startDistance: 300,
     zoomTarget: new THREE.Vector3(0, 5, 25),
     zoomActive: true,
-    zoomSpeed: 0.02,
+    zoomSpeed: 0.012,
     followPlanet: null,
   };
   // Mouse position drives camera look direction
@@ -412,7 +424,7 @@ function setupInteractions(container, camera) {
       e.preventDefault();
       const dir = new THREE.Vector3();
       camera.getWorldDirection(dir);
-      const amt = -e.deltaY * 0.05;
+      const amt = -e.deltaY * 0.025;
       camera.position.addScaledVector(dir, amt);
     },
     { passive: false }
@@ -653,12 +665,12 @@ function createSongPickerDOM(isMobile) {
   const wrapper = document.createElement("div");
   if (isMobile) {
     wrapper.style.cssText =
-      "position:absolute;bottom:0;left:0;z-index:20;" +
-      "background:rgba(0,0,0,0.5);padding:10px;border-top-right-radius:6px;color:#e6eef8;font-size:14px;" +
+      "position:relative;z-index:20;" +
+      "background:rgba(0,0,0,0.5);padding:10px;border-radius:6px;color:#e6eef8;font-size:14px;" +
       "display:flex;align-items:center;gap:10px;flex-wrap:wrap;";
   } else {
     wrapper.style.cssText =
-      "position:absolute;bottom:12px;left:12px;z-index:20;" +
+      "position:relative;z-index:20;" +
       "background:rgba(0,0,0,0.4);padding:8px;border-radius:6px;color:#e6eef8;font-size:12px;" +
       "display:flex;align-items:center;gap:8px;flex-wrap:wrap;";
   }
@@ -687,10 +699,10 @@ function createSongPickerDOM(isMobile) {
 
 // --- Google Drive song picker ---------------------------------------------
 
-function setupSongPicker(container, audioState, onSpectrum, onNewSource, isMobile, beatDetector) {
+function setupSongPicker(parentEl, audioState, onSpectrum, onNewSource, isMobile, beatDetector) {
   initializeGoogleAuth();
   const dom = createSongPickerDOM(isMobile);
-  container.appendChild(dom.wrapper);
+  parentEl.appendChild(dom.wrapper);
   const driveState = { provider: null };
   let activeLiveMode = null; // "mic" | "desktop" | null
 
@@ -814,6 +826,13 @@ function initScene() {
   if (gui) beatDetector.setupGUI(gui);
 
   const audioState = createAudioState();
+  /** Fixed baseline for FFT-driven bloom strength (cockpit bloom dial removed). */
+  const bloomBaseline = { multiplier: 1 };
+  const bloomSmooth = {
+    strength: bloomPass.strength,
+    lastMultiplier: bloomBaseline.multiplier,
+  };
+  let syncMusicUi = () => {};
   const onSpectrum = (spectrum) => {
     if (audioState._liveStream) {
       pyramidField.setKeyframes(null);
@@ -837,7 +856,14 @@ function initScene() {
     comet.setLoudness(loudness);
 
     applySpectrumToParams(spectrum, {
-      planetParams, radiusCtrl, bloomPass, material, sphere, baseRadius,
+      planetParams,
+      radiusCtrl,
+      bloomPass,
+      bloomBaseline,
+      bloomSmooth,
+      material,
+      sphere,
+      baseRadius,
     });
 
     const beatInfo = beatDetector.update(spectrum);
@@ -845,10 +871,27 @@ function initScene() {
   };
 
   setupPlanetClickHandler(renderer, camera, sphere, audioState);
-  const pickerWrapper = setupSongPicker(container, audioState, onSpectrum, () => {
+
+  const onNewAudioSource = () => {
     snapshotState = { snapshots: [], frameCount: 0 };
-  }, isMobile, beatDetector);
-  if (gui) pickerWrapper.appendChild(gui.domElement);
+    syncMusicUi();
+  };
+
+  if (gui) {
+    const bottomHud = document.createElement("div");
+    bottomHud.className = "bottom-left-hud";
+    container.appendChild(bottomHud);
+    const cockpit = mountScreenDials(bottomHud, {
+      pyramidField,
+      audioState,
+      toggleAudioPlayback,
+    });
+    syncMusicUi = cockpit.syncMusicToggle;
+    setupSongPicker(bottomHud, audioState, onSpectrum, onNewAudioSource, isMobile, beatDetector);
+    bottomHud.appendChild(gui.domElement);
+  } else {
+    setupSongPicker(container, audioState, onSpectrum, onNewAudioSource, isMobile, beatDetector);
+  }
 
   // Camera controller via CameraController class
   const camCtrl = new CameraController(container, camera, { isMobile });
@@ -867,6 +910,7 @@ function initScene() {
   const clock = new THREE.Clock();
   (function tick() {
     requestAnimationFrame(tick);
+    if (audioState.stream) audioState.stream.pump();
     const t = clock.getDelta();
     solarSystem.update(t);
     // Keep the comet orbiting around whichever planet the camera is watching
@@ -882,9 +926,48 @@ function initScene() {
 
 // --- Spectrum → scene parameter mapping -----------------------------------
 
+/**
+ * Scale planet albedo from bloom baseline multiplier (FFT path); multiplier 1 → unity vs stored base.
+ * @param {THREE.MeshPhysicalMaterial} material
+ * @param {number} bloom_dial_multiplier
+ */
+function applyPlanetBrightnessFromBloomDial(material, bloom_dial_multiplier) {
+  const base = material.userData?.planetBaseColor;
+  if (!base || typeof material.color?.copy !== "function") return;
+  const scale = 0.55 + 0.45 * bloom_dial_multiplier;
+  material.color.copy(base).multiplyScalar(scale);
+}
+
+/** Smoothing factor for bloom strength toward FFT×dial target (when `bloomSmooth` is used). */
+const BLOOM_STRENGTH_SMOOTH_ALPHA = 0.22;
+
+/**
+ * @param {object} ctx
+ * @param {number} target - midAvg * 3 * multiplier (FFT applied to dial scale)
+ */
+function updateBloomStrengthFromSpectrum(ctx, target) {
+  const { bloomPass, bloomBaseline, bloomSmooth } = ctx;
+  const m = bloomBaseline?.multiplier ?? 1;
+
+  if (!bloomSmooth) {
+    bloomPass.strength = target;
+    return;
+  }
+
+  let b = bloomSmooth.strength;
+  if (m !== bloomSmooth.lastMultiplier) {
+    bloomSmooth.lastMultiplier = m;
+    b = target;
+  } else {
+    b = b + BLOOM_STRENGTH_SMOOTH_ALPHA * (target - b);
+  }
+  bloomSmooth.strength = b;
+  bloomPass.strength = b;
+}
+
 function applySpectrumToParams(
   spectrum,
-  { planetParams, radiusCtrl, bloomPass, material, sphere, baseRadius }
+  { planetParams, radiusCtrl, bloomPass, bloomBaseline, bloomSmooth, material, sphere, baseRadius }
 ) {
   const len = spectrum.length;
   const third = Math.floor(len / 3);
@@ -897,16 +980,19 @@ function applySpectrumToParams(
   const midAvg = avg(mid);
   const highAvg = avg(high);
 
-  const newRadius = baseRadius + lowAvg * 0.65;
-  planetParams.radius = newRadius;
-  if (radiusCtrl) radiusCtrl.setValue(newRadius);
-  // Smooth lerp toward target scale instead of jumping
-  const target = newRadius / baseRadius;
-  const current = sphere.scale.x;
-  const smoothed = current + (target - current) * 0.08;
-  sphere.scale.setScalar(smoothed);
+  const { smoothedScale, displayRadius } = computeSmoothedPlanetScale(
+    lowAvg,
+    baseRadius,
+    sphere.scale.x,
+  );
+  planetParams.radius = displayRadius;
+  sphere.scale.setScalar(smoothedScale);
+  if (radiusCtrl) radiusCtrl.updateDisplay();
 
-  bloomPass.strength = midAvg * 3;
+  const baseline_multiplier = bloomBaseline?.multiplier ?? 1;
+  const bloomTarget = midAvg * 3 * baseline_multiplier;
+  updateBloomStrengthFromSpectrum({ bloomPass, bloomBaseline, bloomSmooth }, bloomTarget);
+  applyPlanetBrightnessFromBloomDial(material, baseline_multiplier);
   bloomPass.threshold = highAvg;
   material.reflectivity = 0.2 + highAvg * 0.8;
 }
@@ -933,6 +1019,9 @@ export {
   handleResize,
   animateLoop,
   initScene,
+  computeSmoothedPlanetScale,
+  BLOOM_STRENGTH_SMOOTH_ALPHA,
+  applyPlanetBrightnessFromBloomDial,
   applySpectrumToParams,
   createAudioState,
   stopAudio,

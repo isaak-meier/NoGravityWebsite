@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { attachPlanetInteriorGoop } from "./planet-goop-material.js";
 
 const PLANET_DEFS = [
   { color: 0x60a5fa, radius: 0.9, orbit: 12, speed: 0.3,  label: "Blue"   },
@@ -39,12 +40,15 @@ class SolarSystem {
   }
 
   update(dt) {
-      for (const p of this.planets) {
-        // p.pivot.rotation.y += dt * p.def.speed; // Orbit disabled
-        p.mesh.rotation.y += dt * 0.2;
-        p.mesh.rotation.x += dt * 0.08;
+    for (const p of this.planets) {
+      // p.pivot.rotation.y += dt * p.def.speed; // Orbit disabled
+      p.mesh.rotation.y += dt * 0.2;
+      p.mesh.rotation.x += dt * 0.08;
+      if (p.goopMaterial?.uniforms?.uTime) {
+        p.goopMaterial.uniforms.uTime.value += dt;
       }
-      this.starField.rotation.y += dt * 0.001;
+    }
+    this.starField.rotation.y += dt * 0.001;
   }
 
   _createSun() {
@@ -68,11 +72,12 @@ class SolarSystem {
       reflectivity: 0.9,
     });
     const mesh = new THREE.Mesh(geo, mat);
+    const goopMaterial = attachPlanetInteriorGoop(mesh, def, this.isMobile);
     const pivot = new THREE.Group();
     mesh.position.set(def.orbit, 0, 0);
     pivot.add(mesh);
     pivot.rotation.y = Math.random() * Math.PI * 2;
-    return { mesh, material: mat, pivot, def };
+    return { mesh, material: mat, pivot, def, goopMaterial };
   }
 
   _createStars() {

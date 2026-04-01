@@ -11,6 +11,7 @@
  * // stream.onData receives a Float32Array with values normalized 0..1
  * // stream.onData((spectrum) => { console.log(spectrum); });
  * // stream.start();
+ * // Call stream.pump() once per frame from the same rAF as your renderer (see three-scene).
  */
 
 class FFTStream extends EventTarget {
@@ -18,29 +19,30 @@ class FFTStream extends EventTarget {
     super();
     this.analyser = analyser;
     this.data = new Uint8Array(this.analyser.frequencyBinCount);
+    /** Reused each pump(); listeners must treat detail as live buffer (copy to retain). */
+    this._normalized = new Float32Array(this.data.length);
     this._running = false;
-    this._raf = null;
   }
 
   start() {
     if (this._running) return;
     this._running = true;
-    const loop = () => {
-      if (!this._running) return;
-      this.analyser.getByteFrequencyData(this.data);
-      // normalize 0..255 -> 0..1 into Float32Array for convenience
-      const out = new Float32Array(this.data.length);
-      for (let i = 0; i < this.data.length; i++) out[i] = this.data[i] / 255;
-      this.dispatchEvent(new CustomEvent('data', { detail: out }));
-      this._raf = requestAnimationFrame(loop);
-    };
-    this._raf = requestAnimationFrame(loop);
+  }
+
+  /**
+   * Pull one FFT frame and emit `data`. Call from the app render loop (e.g. one rAF)
+   * so spectrum work stays on the same frame as Three.js — avoids a second rAF + GC.
+   */
+  pump() {
+    if (!this._running) return;
+    this.analyser.getByteFrequencyData(this.data);
+    const out = this._normalized;
+    for (let i = 0; i < this.data.length; i++) out[i] = this.data[i] / 255;
+    this.dispatchEvent(new CustomEvent('data', { detail: out }));
   }
 
   stop() {
     this._running = false;
-    if (this._raf) cancelAnimationFrame(this._raf);
-    this._raf = null;
   }
 
   onData(cb) {

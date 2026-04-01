@@ -1,4 +1,8 @@
 import * as THREE from 'three';
+import {
+  DEFAULT_EXPONENTIAL_DRAG_TAU,
+  exponentialDragBlend,
+} from '../math/exponential-drag.js';
 
 // --- Geometry extraction & subdivision (existing) ---
 
@@ -207,19 +211,41 @@ export default class ShardShatter {
     });
   }
 
-  syncShardTransform(index, position, quaternion, scale) {
+  /**
+   * Keep registry + active wave origin aligned with the pyramid mesh.
+   * @param {number | null} deltaTime - When > 0 and the shard is mid-shatter, drag toward the target
+   *   (exponential smoothing). Pass `null` to snap (e.g. starting a new wave in `_triggerShatter`).
+   */
+  syncShardTransform(index, position, quaternion, scale, deltaTime) {
     const entry = this._shardRegistry.get(index);
-    if (entry) {
+    if (!entry) return;
+
+    const state = this._shardStates.get(index);
+    if (!state) {
       entry.position.copy(position);
       entry.quaternion.copy(quaternion);
       entry.scale = scale;
+      return;
     }
-    const state = this._shardStates.get(index);
-    if (state) {
+
+    const instant = deltaTime == null || !(deltaTime > 0);
+    if (instant) {
+      entry.position.copy(position);
+      entry.quaternion.copy(quaternion);
+      entry.scale = scale;
       state.worldPos.copy(position);
       state.shardQuat.copy(quaternion);
       state.shardScale = scale;
+      return;
     }
+
+    const a = exponentialDragBlend(deltaTime, DEFAULT_EXPONENTIAL_DRAG_TAU);
+    entry.position.lerp(position, a);
+    entry.quaternion.slerp(quaternion, a);
+    entry.scale = THREE.MathUtils.lerp(entry.scale, scale, a);
+    state.worldPos.lerp(position, a);
+    state.shardQuat.slerp(quaternion, a);
+    state.shardScale = THREE.MathUtils.lerp(state.shardScale, scale, a);
   }
 
   _claimSlots(levelIndex, count) {

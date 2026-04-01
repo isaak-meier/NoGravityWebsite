@@ -81,13 +81,17 @@ describe('SolarSystem', () => {
       expect(ss.sun.geometry.parameters.widthSegments).toBe(24);
     });
 
-    it('each planet has mesh, material, pivot, and def', () => {
+    it('each planet has mesh, material, pivot, def, and interior goop', () => {
       const ss = new SolarSystem(false);
       for (const p of ss.planets) {
         expect(p.mesh).toBeInstanceOf(THREE.Mesh);
         expect(p.material).toBeInstanceOf(THREE.MeshPhysicalMaterial);
         expect(p.pivot).toBeInstanceOf(THREE.Group);
         expect(p.def).toHaveProperty('orbit');
+        expect(p.goopMaterial).toBeDefined();
+        expect(p.goopMaterial.uniforms.uTime).toBeDefined();
+        const inner = p.mesh.children.find((c) => c.name === 'planetInteriorGoop');
+        expect(inner).toBeDefined();
       }
     });
 
@@ -159,11 +163,11 @@ describe('SolarSystem', () => {
   });
 
   describe('update', () => {
-    it('rotates planet pivots', () => {
+    it('keeps pivot rotation fixed when orbital motion is disabled', () => {
       const ss = new SolarSystem(false);
       const initY = ss.planets[0].pivot.rotation.y;
       ss.update(1);
-      expect(ss.planets[0].pivot.rotation.y).not.toBe(initY);
+      expect(ss.planets[0].pivot.rotation.y).toBe(initY);
     });
 
     it('spins planet meshes', () => {
@@ -180,13 +184,12 @@ describe('SolarSystem', () => {
       expect(ss.starField.rotation.y).not.toBe(initY);
     });
 
-    it('planet orbital speed matches def.speed', () => {
+    it('advances interior goop time uniform', () => {
       const ss = new SolarSystem(false);
       const dt = 0.5;
-      const before = ss.planets[2].pivot.rotation.y;
+      const before = ss.planets[0].goopMaterial.uniforms.uTime.value;
       ss.update(dt);
-      const delta = ss.planets[2].pivot.rotation.y - before;
-      expect(delta).toBeCloseTo(dt * ss.planets[2].def.speed);
+      expect(ss.planets[0].goopMaterial.uniforms.uTime.value).toBeCloseTo(before + dt);
     });
   });
 

@@ -7,7 +7,7 @@ vi.mock('../audio/audio-fft.js', () => {
     constructor() { this.context = { state: 'running', resume: vi.fn() }; }
     async load() {}
     createStream() {
-      return { onData: vi.fn(), start: vi.fn(), stop: vi.fn() };
+      return { onData: vi.fn(), start: vi.fn(), stop: vi.fn(), pump: vi.fn() };
     }
   }
   return { default: FakeFFT };
