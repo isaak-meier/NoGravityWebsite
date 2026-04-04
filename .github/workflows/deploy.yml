@@ -22,6 +22,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Write Google Drive config from GitHub secrets
+        env:
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: |
+          if [ -z "$GOOGLE_DRIVE_FOLDER_ID" ] || [ -z "$GOOGLE_API_KEY" ]; then
+            echo "::error::Set secrets GOOGLE_DRIVE_FOLDER_ID and GOOGLE_API_KEY (repo or github-pages environment: Settings → Secrets and variables)."
+            exit 1
+          fi
+          node -e "require('fs').writeFileSync('src/config/app-config.local.json', JSON.stringify({ googleDrive: { folderId: process.env.GOOGLE_DRIVE_FOLDER_ID, apiKey: process.env.GOOGLE_API_KEY } }, null, 2));"
+          echo "Wrote src/config/app-config.local.json for Pages (not committed; from secrets only)."
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

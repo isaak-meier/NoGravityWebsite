@@ -10,7 +10,11 @@ NXGRXVIY website. Planet with shards, audio loading from google drive, some fun 
 
 ## Google Drive auto-load (optional)
 
-Do not commit API keys. Copy `src/config/app-config.local.json.example` to `src/config/app-config.local.json` (gitignored), then set `folderId` and optionally `apiKey`. The app merges that JSON over defaults in `src/config/app-config.js`.
+`src/config/app-config.js` loads **`app-config.local.json`** next to it (defaults if missing). That file is **gitignored** — do not commit API keys.
+
+**Local dev:** Copy `src/config/app-config.local.json.example` to `app-config.local.json` and set `folderId` and `apiKey`.
+
+**GitHub Pages:** The [deploy workflow](.github/workflows/deploy.yml) generates `app-config.local.json` **during the deploy job** from secrets `GOOGLE_DRIVE_FOLDER_ID` and `GOOGLE_API_KEY` (repository or `github-pages` environment secrets). The deploy fails if either secret is missing. Restrict your Google API key to your site origin and the Drive API in Google Cloud Console.
 
 ## Custom domain (nxgrxvity.com)
 
@@ -44,4 +48,3 @@ Add **Authorized JavaScript origins** and **Authorized redirect URIs** for `http
 ### Deploy branch
 
 Production deploys from the **`prod`** branch (see `.github/workflows/deploy.yml`). Merge or fast-forward `prod` to match `main` after pushing changes.
-
