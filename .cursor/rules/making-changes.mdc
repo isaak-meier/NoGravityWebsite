@@ -31,6 +31,10 @@ Use this whenever you add or modify code (not for pure Q&A unless the user asks 
 
 - **Run** whatever checks the project already uses (e.g. `npm test`, lint, or manual spot-check) when you claim something works or before suggesting merge; fix failures you introduce.
 
+## Git commits
+
+- **Do not** add Cursor attribution in commit messages (e.g. “Made with Cursor”, `Made-with: Cursor`, or similar). Use normal conventional subject/body only.
+
 ## After changing code (explainer mode)
 
 Whenever you **edit project files**, explain what you changed in the **same response** using this repo’s **Explainer mode** (see `.cursor/rules/explainer-mode.mdc`).
