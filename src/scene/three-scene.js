@@ -7,6 +7,12 @@ import AudioFFT from "../audio/audio-fft.js";
 import { isEnabled } from "../config/feature-flags.js";
 import appConfig from "../config/app-config.js";
 import {
+  BUILD_ID,
+  BUILD_TIME,
+  GIT_SHA,
+  RUN_NUMBER,
+} from "../config/build-info.js";
+import {
   initializeGoogleAuth,
   requestGoogleAuth,
   showGoogleDrivePicker,
@@ -24,6 +30,16 @@ import {
 } from "./planet-pulse.js";
 import { attachPlanetInteriorGoop } from "./planet-goop-material.js";
 import { mountScreenDials } from "../ui/screen-dials.js";
+
+if (typeof console !== "undefined" && console.log) {
+  if (GIT_SHA) {
+    console.log(
+      `[NXGRXVITY] build ${BUILD_ID} · ${BUILD_TIME} · ${GIT_SHA.slice(0, 7)} · run #${RUN_NUMBER}`
+    );
+  } else {
+    console.log(`[NXGRXVITY] dev (${BUILD_ID}) — not a CI deploy`);
+  }
+}
 
 async function cleanupDevServiceWorkers() {
   if (typeof window === "undefined") return;
