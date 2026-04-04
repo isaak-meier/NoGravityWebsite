@@ -1,5 +1,5 @@
 ---
-description: Explainer mode (chunked teaching, pseudocode, vscode links), default for explanations, and session change-note (change:) protocol.
+description: Explainer mode (chunked teaching, optional pseudocode only when project code is edited or requested, vscode links), default for explanations, and session change-note (change:) protocol.
 alwaysApply: true
 ---
 
@@ -7,11 +7,11 @@ alwaysApply: true
 
 ## When this applies
 
-**Explanations (default):** When the user asks for **explanation**, **understanding**, or **teaching** — including *explain*, *how does … work*, *what is*, *walk through*, *describe*, *why does* — use **everything below** from **Chunked teaching** through **Real code**: journey map, one chunk per turn (unless they ask for the whole thing at once), pseudocode in **` ```javascript `** fences, progress markers, and **clickable `vscode://file/` links** to real code (not citation-only line blocks).
+**Explanations (default):** When the user asks for **explanation**, **understanding**, or **teaching** — including *explain*, *how does … work*, *what is*, *walk through*, *describe*, *why does* — use **everything below** from **Chunked teaching** through **Real code**: journey map, one chunk per turn (unless they ask for the whole thing at once), progress markers, and **clickable `vscode://file/` links** to real code (not citation-only line blocks). **Pseudocode:** only when this turn **added or modified project code** (see **Pseudocode (when to use)**), or when the user **explicitly** asks for pseudocode.
 
 **Do not** use the full **chunked teaching** flow when the message is only an **implementation** or **fix** request with no teaching ask (e.g. “add X”, “fix the error on line 40”) — **unless** the user also wants a lesson, or you are mid-chunk on a topic.
 
-**After code changes (this repo):** Whenever you **modify project files**, also provide a **change explanation** in the same turn: follow **Pseudocode** and **Real code** below (minimal pseudocode + `vscode://file/` links for tiny edits; fuller structure when behavior is non-obvious). Details and edge cases: `.cursor/rules/making-changes.mdc`. The **journey map / one chunk per turn** loop is for **teaching a topic**, not required for every one-line fix — use it when the change is **large**, **multi-part**, or the user is explicitly in a chunked lesson.
+**After code changes (this repo):** Whenever you **modify project files**, also provide a **change explanation** in the same turn: **`vscode://file/` links** and plain-language **what & why** (see `making-changes.mdc`). **Pseudocode** in that explanation **only** when those edits include **new or changed project code** worth sketching (minimal for tiny edits; skip if the diff is trivial and prose is enough). The **journey map / one chunk per turn** loop is for **teaching a topic**, not required for every one-line fix — use it when the change is **large**, **multi-part**, or the user is explicitly in a chunked lesson.
 
 **Explicit triggers:** The user may still say **explainer mode**, **explain in explainer mode**, or **`@explainer-mode`**.
 
@@ -26,7 +26,7 @@ alwaysApply: true
 For any substantial topic (architecture, a pipeline, a feature), **do not dump everything at once**.
 
 1. **Outline first:** At the start of a topic, give a **numbered list of chunks** you will cover — short titles only (e.g. “1. Two clocks: frame vs spectrum”, “2. Camera modes”, …). This is the **journey map**.
-2. **One chunk per turn (default):** Explain **only the current chunk** in digestible depth (enough to stand alone, with a concrete hook like the “two clocks” idea). **Always include at least one pseudocode block** for that chunk — use a **` ```javascript `** fence (see **Pseudocode** below) so it renders **syntax-colored**.
+2. **One chunk per turn (default):** Explain **only the current chunk** in digestible depth (enough to stand alone, with a concrete hook like the “two clocks” idea). Use **prose** (and real-code links when the topic is this repo). **Do not** add pseudocode for teaching-only chunks **unless** the user asks for it or this turn also **changed project code** (see **Pseudocode (when to use)**).
 3. **Pause for mastery:** Stop and invite **questions and back-and-forth** on that chunk. Do **not** advance to the next chunk until the user signals they are satisfied (e.g. “next”, “got it”, “move on”, or they stop asking and explicitly ask for the next part).
 4. **Progress marker:** Whenever you answer within a topic, end with a **where we are** line: e.g. “**Chunk 2 of 5 — Camera modes** (chunks 1 ✓, 2 in progress, 3–5 ahead).” After each chunk is done, mark it ✓ in subsequent summaries.
 5. **Scope drift:** If the user’s questions dig into a later chunk, answer briefly or say “we’ll cover that in chunk N” unless blocking their understanding of the current chunk.
@@ -35,11 +35,12 @@ If the user asks for “the whole thing” in one message, still provide the **c
 
 ---
 
-## Pseudocode (required)
+## Pseudocode (when to use)
 
-**Pseudocode** (in explainer mode): readable specs with **meaning-first names**, optional **lemma / consequence** lines, and **structure** (inputs → steps → result). This is the default format for explanations in explainer mode.
+**Pseudocode** (optional in chat): readable specs with **meaning-first names**, optional **lemma / consequence** lines, and **structure** (inputs → steps → result).
 
-- **Always** include **pseudocode** when explaining behavior (architecture, loops, state machines, data flow). Short answers still need a **minimal** pseudocode snippet if anything non-obvious is discussed.
+- **Include pseudocode only when:** (1) this turn **added or modified project code** and the change explanation benefits from a short spec, or (2) the user **explicitly** asks for pseudocode. **Do not** add pseudocode for pure Q&A, conceptual teaching, or chunked explainer turns **unless** (1) or (2) applies.
+- For **substantive** explanations without code changes, **prose** (and **real code** citations from this repo when relevant) is enough; do not pad with pseudocode.
 - **Syntax highlighting (required in chat):** Markdown only colors blocks when the fence uses a **known language id**. Use **` ```javascript `** (preferred) or **` ```typescript `** for pseudocode so **keywords and strings get colors** in Cursor. First line inside the block: **`// pseudocode`** (plus an optional lemma in the same comment line). The **body** may be **`//` lines only** (still valid JS) or a **`function` / block** whose inner steps are **`//` sentences** — avoid custom syntax like `←` or Python `:`-only bodies if that breaks highlighting.
 - Do **not** use ` ```pseudocode ` as the fence language — it is not a standard highlighter and blocks stay **plain gray**.
 - **Map** pseudocode to real code: after the block, point to **clickable file links** (see **Real code**) when the topic is this repo.
@@ -135,7 +136,7 @@ Optional: prefix with `<!-- added: YYYY-MM-DD -->` if useful for long sessions.
 ## What not to do (explainer)
 
 - Do not replace meaningful names with `b`, `a`, `t` in pseudocode unless the user explicitly asks for algebraic notation.
-- Do not skip pseudocode for substantive explanations; prose alone is not enough in explainer mode.
+- Do not **require** pseudocode for substantive explanations when no project code was edited this turn; clear prose (and real-code links) is enough.
 - Do not encode steps as **fake method calls** (`doThing(x, y)`) when explaining behavior; use **`//` sentences with typed inputs and outputs** instead.
 - Do not write a pseudocode **function** without an **In:** / **Out:** (or equivalent `@param` / `@returns`) comment explaining inputs and outputs.
 - Do not paste **real** source snippets without a **language-tagged** fence when the file type is known (user expects **color** for real code as well as pseudocode).
