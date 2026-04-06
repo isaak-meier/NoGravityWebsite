@@ -1,0 +1,23 @@
+{
+  "name": "no-gravity-website",
+  "version": "0.1.0",
+  "description": "Minimal static site scaffold for No Gravity",
+  "scripts": {
+    "start": "serve -s . -l tcp://0.0.0.0:3000",
+    "start:phone": "node scripts/start-phone.cjs",
+    "test": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "lil-gui": "^0.21.0",
+    "realtime-bpm-analyzer": "^5.0.1",
+    "serve": "^14.2.5",
+    "three": "^0.182.0"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^28.0.0",
+    "@vitest/coverage-v8": "^4.1.2",
+    "jsdom": "^28.1.0",
+    "vitest": "^4.0.18"
+  }
+}

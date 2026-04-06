@@ -1,0 +1,56 @@
+---
+description: How to edit this repo — scope, style, and quality bar whenever making code changes
+alwaysApply: true
+---
+
+# Making changes
+
+Use this whenever you add or modify code (not for pure Q&A unless the user asks you to change something).
+
+## Scope
+
+- **Only** change what the task requires. No drive-by refactors, no “while I’m here” cleanups in unrelated files.
+- If the request is ambiguous, **infer the smallest reasonable change** that satisfies it; don’t expand scope without cause.
+
+## Before writing
+
+- **Read** nearby code and callers/callees enough to match naming, patterns, imports, and error-handling style.
+- **Prefer extending** existing helpers, components, and utilities over parallel implementations.
+
+## Diffs
+
+- **Every line should earn its place** for the stated goal. Avoid extra variables, comments that restate the obvious, or defensive try/catch unless the codebase already does that here.
+- **Do not remove** existing comments or unrelated code unless the task requires it — noisy diffs hide real changes.
+
+## Quality
+
+- **Web/UI:** Keep layout, spacing, typography, and colors consistent with what’s already in the file or project.
+- **Structure:** If new logic is getting large, split helpers (see the function-length rule) instead of one giant block.
+
+## Verification
+
+- **Run** whatever checks the project already uses (e.g. `npm test`, lint, or manual spot-check) when you claim something works or before suggesting merge; fix failures you introduce.
+
+## Git commits
+
+- **Do not** add Cursor attribution in commit messages (e.g. “Made with Cursor”, `Made-with: Cursor`, or similar). Use normal conventional subject/body only.
+
+## After changing code (explainer mode)
+
+Whenever you **edit project files**, explain what you changed in the **same response** using this repo’s **Explainer mode** (see `.cursor/rules/explainer-mode.mdc`).
+
+**Always include:**
+
+- **What & why** in plain language (goal of the diff, not a line-by-line dump).
+- **Clickable `vscode://file/` links** to each touched file at a useful start line (URL-encode spaces). Do not rely on citation-only blocks as the only way to open files.
+- At least one **` ```javascript `** **pseudocode** block for the change: use `// pseudocode` on the first line, **In:/Out:** on any wrapper function, and **per-step `//` English sentences** that describe behavior and list **all inputs and outputs with types** — **no** `methodName(args)` step lines (see **Pseudocode** in `explainer-mode.mdc`). For a trivial one-line tweak, **one** such `//` sentence with full typed In/Out is enough.
+
+**When showing real code** from the repo, use a fenced block with the correct **language id** (`javascript`, `css`, `html`, …).
+
+**Chunked teaching** (journey map, one chunk per turn, progress markers): use when the change is **large**, touches **many concerns**, or the user is learning a system — not mandatory for a small, localized edit (still give pseudocode + links in one turn).
+
+```javascript
+// ❌ BAD: unrelated rename + style sweep across the file while fixing one bug
+
+// ✅ GOOD: minimal edit at the bug site + one test or manual check if applicable
+```

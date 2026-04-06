@@ -1,0 +1,13 @@
+---
+description: When the user says "start er up", run the dev server and open the browser.
+alwaysApply: true
+---
+
+# "Start er up"
+
+When the user says **start er up** (or close variants like "start 'er up"), do this:
+
+1. Start the project dev server (this repo uses `npm start` → static server on **port 3000**).
+2. Open the default browser to **http://localhost:3000** (or the URL printed by the server if it differs).
+
+Run the server in the background if needed, wait briefly for the port to listen, then open the browser.
