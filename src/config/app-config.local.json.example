@@ -2,5 +2,10 @@
   "googleDrive": {
     "folderId": null,
     "apiKey": null
+  },
+  "mailingList": {
+    "formAction": null,
+    "emailFieldName": "entry.000000000",
+    "mailtoFallback": null
   }
 }

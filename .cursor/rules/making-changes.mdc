@@ -42,7 +42,7 @@ Whenever you **edit project files**, explain what you changed in the **same resp
 **Always include:**
 
 - **What & why** in plain language (goal of the diff, not a line-by-line dump).
-- **Clickable `vscode://file/` links** to each touched file at a useful start line (URL-encode spaces). Do not rely on citation-only blocks as the only way to open files.
+- **Clickable `cursor://file/` links** to each touched file at a useful start line (URL-encode spaces; use `cursor://` so links open in Cursor—`vscode://file/` often misroutes on Windows). Do not rely on citation-only blocks as the only way to open files.
 - At least one **` ```javascript `** **pseudocode** block for the change: use `// pseudocode` on the first line, **In:/Out:** on any wrapper function, and **per-step `//` English sentences** that describe behavior and list **all inputs and outputs with types** — **no** `methodName(args)` step lines (see **Pseudocode** in `explainer-mode.mdc`). For a trivial one-line tweak, **one** such `//` sentence with full typed In/Out is enough.
 
 **When showing real code** from the repo, use a fenced block with the correct **language id** (`javascript`, `css`, `html`, …).

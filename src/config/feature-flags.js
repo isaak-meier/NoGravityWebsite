@@ -7,6 +7,10 @@ const FLAGS = {
   // Tests can still call setFlag to simulate disabled state.
   ENABLE_GUI: true,
   ENABLE_UPLOAD: true,
+  /** Dev: first frame starts comet orbit follow (same controls as planet). Off = normal planet camera. */
+  COMET_DEV_INSPECT_ON_LOAD: false,
+  /** First Google Drive track loads and plays on load when a folder is configured. */
+  AUTOPLAY_FIRST_DRIVE_TRACK_ON_LOAD: true,
 };
 
 /**

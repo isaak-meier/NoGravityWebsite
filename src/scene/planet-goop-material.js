@@ -6,12 +6,17 @@ export const PLANET_GOOP_INNER_SCALE = 0.93;
 const vertexShader = /* glsl */ `
 varying vec3 vNormal;
 varying vec3 vWorldPos;
+varying vec3 vViewPosition;
+varying vec3 vLocalDir;
 
 void main() {
   vNormal = normalize(normalMatrix * normal);
+  vLocalDir = normalize(position);
   vec4 worldPos = modelMatrix * vec4(position, 1.0);
   vWorldPos = worldPos.xyz;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  vViewPosition = mvPosition.xyz;
+  gl_Position = projectionMatrix * mvPosition;
 }
 `;
 
@@ -21,6 +26,8 @@ uniform vec3 uTint;
 
 varying vec3 vNormal;
 varying vec3 vWorldPos;
+varying vec3 vViewPosition;
+varying vec3 vLocalDir;
 
 float hash(vec3 p) {
   p = fract(p * 0.3183099 + vec3(0.1, 0.2, 0.3));
@@ -51,33 +58,57 @@ float noise3(vec3 x) {
 
 void main() {
   float t = uTime;
-  vec3 p = vWorldPos * 3.8 + vec3(t * 0.07, t * 0.05, t * 0.09);
+  vec3 N = normalize(vNormal);
+  vec3 V = normalize(-vViewPosition);
+
+  // --- Concentric ripples on the inner sphere (rain-on-puddle read) ---
+  vec3 d = vLocalDir;
+  float lon = atan(d.z, d.x);
+  float lat = asin(clamp(d.y, -1.0, 1.0));
+  float rip1 = sin(lon * 14.0 + t * 1.1) * sin(lat * 11.0 - t * 0.85);
+  float rip2 = sin(lon * 23.0 - t * 0.9) * cos(lat * 18.0 + t * 0.6);
+  float ripples = rip1 * 0.55 + rip2 * 0.35;
+  ripples = ripples * 0.5 + 0.5;
+
+  // --- Slow turbulent shimmer (under-surface) ---
+  vec3 p = vWorldPos * 2.6 + vec3(t * 0.06, t * 0.04, t * 0.07);
   float n1 = noise3(p);
-  float n2 = noise3(p * 2.4 + vec3(2.1, 0.0, 1.7));
-  float n3 = noise3(p * 5.2 - vec3(t * 0.2));
-  float n = n1 * 0.5 + n2 * 0.3 + n3 * 0.2;
-  float flow = sin(n * 10.0 + t * 2.2) * 0.5 + 0.5;
+  float n2 = noise3(p * 2.8 + vec3(1.7, 0.0, 2.2));
+  float n3 = noise3(p * 6.1 - vec3(t * 0.15));
+  float n = n1 * 0.52 + n2 * 0.32 + n3 * 0.16;
+  float caust = smoothstep(0.55, 0.92, n * n2) * (0.35 + 0.65 * ripples);
 
-  vec3 slimeA = vec3(0.95, 0.12, 0.55);
-  vec3 slimeB = vec3(0.15, 0.88, 0.55);
-  vec3 slimeC = vec3(0.4, 0.35, 1.0);
-  vec3 slimeD = vec3(1.0, 0.75, 0.15);
+  // --- Palette: deep pool, teal body, cyan spec / caustic ---
+  vec3 poolDeep = vec3(0.02, 0.06, 0.09);
+  vec3 poolMid = vec3(0.04, 0.22, 0.28);
+  vec3 poolLit = vec3(0.12, 0.62, 0.72);
+  vec3 caustBright = vec3(0.45, 0.92, 0.98);
+  vec3 edgeSheen = vec3(0.75, 0.92, 1.0);
 
-  vec3 col = mix(slimeA, slimeB, n);
-  col = mix(col, slimeC, smoothstep(0.15, 0.85, flow));
-  col = mix(col, slimeD, smoothstep(0.35, 0.95, n2 * n3));
-  col = mix(col, uTint, 0.28);
-  col += 0.07 * vec3(n1, n2, n3);
+  vec3 col = mix(poolDeep, poolMid, n);
+  col = mix(col, poolLit, smoothstep(0.2, 0.75, ripples) * 0.55);
+  col = mix(col, uTint * vec3(0.55, 0.6, 0.65), 0.22);
+  col += caustBright * caust * 0.42;
+  col += 0.06 * vec3(n1, n2 * 0.9, n3);
 
-  float rim = pow(0.5 + 0.5 * abs(normalize(vNormal).z), 1.35);
-  col *= 0.62 + 0.38 * rim;
+  // View-dependent liquid edge + soft spec (puddle rim)
+  float fres = pow(1.0 - clamp(abs(dot(N, V)), 0.0, 1.0), 2.8);
+  col += edgeSheen * fres * 0.38;
+  vec3 L = normalize(vec3(0.25, 0.92, 0.18));
+  vec3 R = reflect(-L, N);
+  float spec = pow(max(dot(R, V), 0.0), 48.0);
+  col += vec3(0.55, 0.88, 1.0) * spec * 0.55;
+
+  // Slight vignette on dome so center feels like still water
+  float dome = pow(0.48 + 0.52 * abs(N.y), 1.15);
+  col *= 0.78 + 0.22 * dome;
 
   gl_FragColor = vec4(col, 1.0);
 }
 `;
 
 /**
- * Interior shell material: only visible from inside the sphere (BackSide). Colorful animated slime.
+ * Interior shell material: only visible from inside the sphere (BackSide). Liquid pool: ripples, caustics, fresnel edge.
  * @param {number} tintHex - planet surface color for subtle tint
  * @returns {THREE.ShaderMaterial}
  */
@@ -96,7 +127,7 @@ export function createPlanetGoopMaterial(tintHex) {
 }
 
 /**
- * Adds a slightly smaller inner shell as a child of the planet mesh so flying inside shows animated goop.
+ * Adds a slightly smaller inner shell as a child of the planet mesh so flying inside shows the puddle interior.
  * @param {THREE.Mesh} planetMesh
  * @param {{ radius: number, color: number }} def
  * @param {boolean} isMobile

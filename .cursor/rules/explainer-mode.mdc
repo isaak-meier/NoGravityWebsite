@@ -1,5 +1,5 @@
 ---
-description: Explainer mode (chunked teaching, optional pseudocode only when project code is edited or requested, vscode links), default for explanations, and session change-note (change:) protocol.
+description: Explainer mode (chunked teaching, optional pseudocode only when project code is edited or requested, cursor file links), default for explanations, and session change-note (change:) protocol.
 alwaysApply: true
 ---
 
@@ -7,11 +7,11 @@ alwaysApply: true
 
 ## When this applies
 
-**Explanations (default):** When the user asks for **explanation**, **understanding**, or **teaching** — including *explain*, *how does … work*, *what is*, *walk through*, *describe*, *why does* — use **everything below** from **Chunked teaching** through **Real code**: journey map, one chunk per turn (unless they ask for the whole thing at once), progress markers, and **clickable `vscode://file/` links** to real code (not citation-only line blocks). **Pseudocode:** only when this turn **added or modified project code** (see **Pseudocode (when to use)**), or when the user **explicitly** asks for pseudocode.
+**Explanations (default):** When the user asks for **explanation**, **understanding**, or **teaching** — including *explain*, *how does … work*, *what is*, *walk through*, *describe*, *why does* — use **everything below** from **Chunked teaching** through **Real code**: journey map, one chunk per turn (unless they ask for the whole thing at once), progress markers, and **clickable `cursor://file/` links** to real code (not citation-only line blocks). **Pseudocode:** only when this turn **added or modified project code** (see **Pseudocode (when to use)**), or when the user **explicitly** asks for pseudocode.
 
 **Do not** use the full **chunked teaching** flow when the message is only an **implementation** or **fix** request with no teaching ask (e.g. “add X”, “fix the error on line 40”) — **unless** the user also wants a lesson, or you are mid-chunk on a topic.
 
-**After code changes (this repo):** Whenever you **modify project files**, also provide a **change explanation** in the same turn: **`vscode://file/` links** and plain-language **what & why** (see `making-changes.mdc`). **Pseudocode** in that explanation **only** when those edits include **new or changed project code** worth sketching (minimal for tiny edits; skip if the diff is trivial and prose is enough). The **journey map / one chunk per turn** loop is for **teaching a topic**, not required for every one-line fix — use it when the change is **large**, **multi-part**, or the user is explicitly in a chunked lesson.
+**After code changes (this repo):** Whenever you **modify project files**, also provide a **change explanation** in the same turn: **`cursor://file/` links** and plain-language **what & why** (see `making-changes.mdc`). **Pseudocode** in that explanation **only** when those edits include **new or changed project code** worth sketching (minimal for tiny edits; skip if the diff is trivial and prose is enough). The **journey map / one chunk per turn** loop is for **teaching a topic**, not required for every one-line fix — use it when the change is **large**, **multi-part**, or the user is explicitly in a chunked lesson.
 
 **Explicit triggers:** The user may still say **explainer mode**, **explain in explainer mode**, or **`@explainer-mode`**.
 
@@ -81,12 +81,13 @@ function animationLoopTick() {
 
 ## Real code in this repo
 
-- **Clickable links (required):** When referencing a file/line range, include a **markdown link** that opens in the editor in one click. Use the **`vscode://file/`** URI (VS Code / Cursor):
-  - **Pattern:** `[label](vscode://file/<absolute-path-to-file>:<startLine>)`
-  - **Path:** Absolute path to the file from the repo/workspace root, use **forward slashes** after the drive letter on Windows (e.g. `c:/Users/.../NoGravityWebsite/src/ui/screen-dials.js`).
-  - **Encoding:** URL-encode spaces and special characters (`%20` for space).
-  - **Line:** `:<startLine>` at the end jumps to the **first** line of the range (same as the old “start:end:path” first number).
-  - **Example:** `[screen-dials — Bloom row](vscode://file/c:/Users/you/project/src/ui/screen-dials.js:17)`
+- **Clickable links (required):** When referencing a file/line range, include a **markdown link** that opens in the editor in one click. In **Cursor**, use the **`cursor://file/`** URI so the OS routes the click to this app ( **`vscode://file/`** is the VS Code docs format and often opens the wrong handler, an external browser, or nothing on Windows).
+  - **Pattern:** `[label](cursor://file/<absolute-path-to-file>:<startLine>)`
+  - **Path:** Absolute path to the file; on Windows use **forward slashes** after the drive letter (e.g. `c:/Users/.../NoGravityWebsite/src/ui/screen-dials.js`).
+  - **Encoding:** URL-encode spaces and other reserved characters in the path (`%20` for space). If a link still fails to parse in chat, encode the drive colon as **`%3A`** (e.g. `c%3A/Users/...` after `cursor://file/`).
+  - **Line:** Append `:<startLine>` at the end (optional `:<column>` as in VS Code: `path:line:column`). This matches `cursor://file/{path}:{line}` used elsewhere for Cursor.
+  - **Example:** `[screen-dials — Bloom row](cursor://file/c:/Users/you/project/src/ui/screen-dials.js:17)`
+  - **Portable alternative:** `vscode://file/...` only when the user explicitly needs VS Code–compatible links or has remapped that scheme to Cursor.
 - **Do not** rely on ` ```startLine:endLine:filepath` alone as the only navigation hint — it is often **not** clickable in chat; **links first**.
 - **Optional:** After the link, a short backtick line for copy-paste: `` `src/ui/screen-dials.js` (lines 17–23) ``.
 - **Syntax highlighting for real code (required):** When you paste **actual** source from this repo, put it in a fenced block with a **language id** so it renders **syntax-colored** in Cursor (same idea as pseudocode). Use **` ```javascript `** for `.js`, **` ```typescript `** for `.ts`/`.tsx`, **` ```css `**, **` ```html `**, **` ```json `**, **` ```shell `**, etc. Do **not** use a bare ` ``` ` or ` ```text ` for real code when a specific highlighter applies. If you only have a ` ```startLine:endLine:path ` citation block and it appears **un-colored**, add a **duplicate** snippet under **` ```javascript `** (or the right tag) with the same lines so the user gets **color + navigation** (link first, then colored block).

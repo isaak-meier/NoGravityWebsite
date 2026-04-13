@@ -30,6 +30,7 @@ import {
 } from "./planet-pulse.js";
 import { attachPlanetInteriorGoop } from "./planet-goop-material.js";
 import { mountScreenDials } from "../ui/screen-dials.js";
+import { createPlanetMailingPanel } from "../ui/planet-mailing-panel.js";
 
 function logNxgrxvityBuildStamp() {
   if (typeof console === "undefined" || !console.log) return;
@@ -98,7 +99,7 @@ function createCamera(container) {
     45,
     container.clientWidth / container.clientHeight,
     0.1,
-    2000
+    15000
   );
   cam.position.set(0, 80, 300);
   return cam;
@@ -262,9 +263,14 @@ function setupLights(scene) {
  * @param {THREE.Mesh} sphere - primary planet mesh (scaled by radius)
  * @param {number} baseRadius - mesh radius before scale
  */
-function setupGUI(material, planetParams, sphere, baseRadius) {
+function createGuiShell() {
   const gui = new GUI({ closeFolders: true, autoPlace: false });
   gui.close();
+  return gui;
+}
+
+/** Planet color + radius folder (used after Comet folder when GUI order matters). */
+function setupPlanetFolder(gui, material, planetParams, sphere, baseRadius) {
   const planet = gui.addFolder("Planet");
   const colorCtrl = planet.addColor(material, "color");
   colorCtrl.onChange(() => {
@@ -274,6 +280,12 @@ function setupGUI(material, planetParams, sphere, baseRadius) {
   });
   const radiusCtrl = planet.add(planetParams, "radius", 0.2, 2);
   radiusCtrl.onChange((v) => sphere.scale.setScalar(v / baseRadius));
+  return radiusCtrl;
+}
+
+function setupGUI(material, planetParams, sphere, baseRadius) {
+  const gui = createGuiShell();
+  const radiusCtrl = setupPlanetFolder(gui, material, planetParams, sphere, baseRadius);
   return { gui, radiusCtrl };
 }
 
@@ -788,7 +800,7 @@ function setupSongPicker(parentEl, audioState, onSpectrum, onNewSource, isMobile
     (typeof window !== "undefined" ? window.__GOOGLE_API_KEY__ : null);
   if (presetFolderId) {
     const provider = new GoogleDriveAudioProvider({ folderId: presetFolderId, apiKey: presetApiKey || null });
-    connectDrive(provider, true).catch((err) => {
+    connectDrive(provider, isEnabled("AUTOPLAY_FIRST_DRIVE_TRACK_ON_LOAD")).catch((err) => {
       console.error("Configured Google Drive folder failed:", err);
     });
   }
@@ -834,6 +846,7 @@ function initScene() {
   const camera = createCamera(container);
   const isMobile = detectMobile();
   const renderer = createRenderer(container);
+
   const { composer, bloomPass } = setupPostProcessing(renderer, scene, camera, container);
 
   // Build solar system via SolarSystem class
@@ -849,13 +862,16 @@ function initScene() {
   let gui;
   let radiusCtrl = null;
   if (isEnabled("ENABLE_GUI")) {
-    ({ gui, radiusCtrl } = setupGUI(material, planetParams, sphere, baseRadius));
+    gui = createGuiShell();
   }
 
-  // Comet streaking across the sky, brightness driven by audio loudness
+  // Comet streaking across the sky (brightness fixed; not tied to spectrum)
   const comet = new Comet();
   scene.add(comet.group);
-  if (gui) comet.setupGUI(gui);
+  if (gui) {
+    comet.setupGUI(gui);
+    radiusCtrl = setupPlanetFolder(gui, material, planetParams, sphere, baseRadius);
+  }
 
   const pyramidField = new PyramidField();
   sphere.add(pyramidField.group);
@@ -896,7 +912,7 @@ function initScene() {
       }
     }
     const loudness = spectrum.reduce((a, v) => a + v, 0) / spectrum.length;
-    comet.setLoudness(loudness);
+    solarSystem.setLoudness(loudness);
 
     applySpectrumToParams(spectrum, {
       planetParams,
@@ -940,13 +956,40 @@ function initScene() {
   const camCtrl = new CameraController(container, camera, { isMobile });
   camCtrl.sun = solarSystem.sun;
   camCtrl.sunLight = solarSystem.sunLight;
-  camCtrl.setupFollowHandler(renderer, solarSystem.planets);
+  camCtrl.setupFollowHandler(renderer, solarSystem.planets, { comet });
   // Fly in directly to the blue planet on startup
   camCtrl.followPlanet = solarSystem.planets[0];
-  camCtrl.defaultFollowPlanet = solarSystem.planets[0];
   camCtrl.zoomActive = false;
-  if (gui) camCtrl.setupGUI(gui);
-  if (gui) setupTitleGUI(gui);
+  if (gui) {
+    camCtrl.setupGUI(gui);
+    setupTitleGUI(gui);
+  }
+
+  const enterPlanetHud = document.createElement("div");
+  enterPlanetHud.className = "enter-planet-hud";
+  const enterPlanetBtn = document.createElement("button");
+  enterPlanetBtn.type = "button";
+  enterPlanetBtn.className = "enter-planet-btn";
+  enterPlanetBtn.textContent = "Enter planet";
+  enterPlanetBtn.setAttribute("aria-label", "Enter planet: animated fly-in while the camera stays locked to this planet");
+  enterPlanetBtn.addEventListener("click", () => {
+    camCtrl.animateEnterPlanet(primary);
+  });
+  enterPlanetHud.appendChild(enterPlanetBtn);
+  container.appendChild(enterPlanetHud);
+
+  const cameraDistanceHud = document.createElement("div");
+  cameraDistanceHud.className = "camera-distance-hud";
+  cameraDistanceHud.setAttribute("aria-live", "polite");
+  const cameraDistanceLabel = document.createElement("span");
+  cameraDistanceLabel.className = "camera-distance-hud__label";
+  cameraDistanceLabel.textContent = "Camera distance ";
+  const cameraDistanceValueEl = document.createElement("span");
+  cameraDistanceValueEl.className = "camera-distance-hud__value";
+  cameraDistanceValueEl.textContent = "—";
+  cameraDistanceHud.appendChild(cameraDistanceLabel);
+  cameraDistanceHud.appendChild(cameraDistanceValueEl);
+  container.appendChild(cameraDistanceHud);
 
   const planetGoopOverlay = document.createElement("div");
   planetGoopOverlay.className = "planet-goop-overlay";
@@ -965,10 +1008,16 @@ function initScene() {
   planetGoopOverlay.appendChild(goopShine);
   container.appendChild(planetGoopOverlay);
 
-  window.addEventListener("resize", () => handleResize(container, camera, renderer, composer));
+  const mailingPanel = createPlanetMailingPanel(appConfig);
+  container.appendChild(mailingPanel.root);
+
+  window.addEventListener("resize", () =>
+    handleResize(container, camera, renderer, composer)
+  );
 
   // Animation loop delegates to SolarSystem.update + CameraController.update
   const clock = new THREE.Clock();
+  let cometDevInspectOnce = isEnabled("COMET_DEV_INSPECT_ON_LOAD");
   (function tick() {
     requestAnimationFrame(tick);
     if (audioState.stream) audioState.stream.pump();
@@ -977,8 +1026,19 @@ function initScene() {
     // Keep the comet orbiting around whichever planet the camera is watching
     const _cometAnchor = new THREE.Vector3();
     (camCtrl.followPlanet ? camCtrl.followPlanet.mesh : sphere).getWorldPosition(_cometAnchor);
+    cameraDistanceValueEl.textContent = camera.position.distanceTo(_cometAnchor).toFixed(1);
     comet.setAnchor(_cometAnchor);
-    comet.update(t);
+    /** Tab backgrounding can make one rAF report multi-second `t`; one `update(t)` shifts the trail once while the head jumps → gap. Sub-step so each shift matches motion. */
+    const maxCometStep = 1 / 60;
+    const cometSubsteps = Math.min(200, Math.max(1, Math.ceil(t / maxCometStep)));
+    const cometDt = t / cometSubsteps;
+    for (let si = 0; si < cometSubsteps; si++) {
+      comet.update(cometDt);
+    }
+    if (cometDevInspectOnce) {
+      cometDevInspectOnce = false;
+      camCtrl.beginFollowComet(comet);
+    }
     const audioTime =
       audioState.audioEl && !audioState._liveStream
         ? audioState.audioEl.currentTime
@@ -989,10 +1049,9 @@ function initScene() {
       audioCurrentTime: audioTime,
     });
     camCtrl.update(t);
-    planetGoopOverlay.classList.toggle(
-      "planet-goop-overlay--visible",
-      isCameraInsideAnyPlanet(camera.position, solarSystem.planets)
-    );
+    const insidePlanet = isCameraInsideAnyPlanet(camera.position, solarSystem.planets);
+    planetGoopOverlay.classList.toggle("planet-goop-overlay--visible", insidePlanet);
+    mailingPanel.setInsidePlanet(insidePlanet);
     composer.render();
   })();
 }

@@ -99,11 +99,34 @@ describe('CameraController', () => {
       expect(ctrl.followPlanet).toBeNull();
     });
 
-    it('starts with explorerMode false', () => {
+    it('beginFollowComet attaches comet orbit', () => {
       const c = makeContainer();
       const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
       const ctrl = new CameraController(c, cam);
-      expect(ctrl.explorerMode).toBe(false);
+      const fakeComet = {
+        getHeadWorldPosition: (v) => v.set(0, 0, 0),
+        getFollowOrbitRadius: () => 0.05,
+      };
+      ctrl.beginFollowComet(fakeComet);
+      expect(ctrl.followComet).toBe(fakeComet);
+    });
+
+    it('animateEnterPlanet eases camera inside and keeps planet follow', () => {
+      const c = makeContainer();
+      const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
+      cam.position.set(0, 40, 0);
+      const ctrl = new CameraController(c, cam);
+      const mesh = new THREE.Mesh();
+      const planet = { mesh, def: { radius: 10 } };
+      ctrl.followPlanet = planet;
+      ctrl.animateEnterPlanet(planet);
+      expect(ctrl._enterPlanetTween).not.toBeNull();
+      for (let i = 0; i < 30; i++) {
+        ctrl.update(0.2);
+      }
+      expect(ctrl._enterPlanetTween).toBeNull();
+      expect(ctrl.followPlanet).toBe(planet);
+      expect(cam.position.distanceTo(new THREE.Vector3(0, 0, 0))).toBeLessThan(10);
     });
   });
 
@@ -138,33 +161,41 @@ describe('CameraController', () => {
       expect(ctrl.keys.w).toBe(false);
     });
 
-    it('exits explorer mode on Escape when exploring', () => {
+    it('clears comet follow on Escape and re-locks to fallback planet', () => {
       const c = makeContainer();
       const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
       const ctrl = new CameraController(c, cam);
-      ctrl.explorerMode = true;
+      const fallback = { mesh: new THREE.Mesh(), def: { radius: 1 } };
+      ctrl._fallbackFollowPlanet = fallback;
+      ctrl.followComet = { getHeadWorldPosition: () => {}, getFollowOrbitRadius: () => 0.05 };
+      const before = ctrl.mouseLookEnabled;
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-      expect(ctrl.explorerMode).toBe(false);
+      expect(ctrl.followComet).toBeNull();
+      expect(ctrl.followPlanet).toBe(fallback);
+      expect(ctrl.mouseLookEnabled).toBe(before);
     });
 
-    it('toggles mouse look on Escape when not exploring', () => {
+    it('toggles mouse look on Escape when not following comet', () => {
       const c = makeContainer();
       const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
       const ctrl = new CameraController(c, cam);
-      ctrl.explorerMode = false;
       const before = ctrl.mouseLookEnabled;
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
       expect(ctrl.mouseLookEnabled).toBe(!before);
     });
 
-    it('moves camera on wheel', () => {
+    it('wheel uses orbit zoom after fallback re-lock (no free dolly)', () => {
       const c = makeContainer();
       const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
       cam.position.set(0, 0, 50);
       const ctrl = new CameraController(c, cam);
-      const initialZ = cam.position.z;
+      const fallback = { mesh: new THREE.Mesh(), def: { radius: 1 } };
+      ctrl._fallbackFollowPlanet = fallback;
+      ctrl.update(0.016);
+      expect(ctrl.followPlanet).toBe(fallback);
+      const scaleBefore = ctrl._followDistanceScale;
       window.dispatchEvent(new WheelEvent('wheel', { deltaY: 100 }));
-      expect(cam.position.z).not.toBe(initialZ);
+      expect(ctrl._followDistanceScale).not.toBe(scaleBefore);
     });
 
     it('adjusts follow orbit zoom scale on wheel when locked to planet', () => {
@@ -172,7 +203,16 @@ describe('CameraController', () => {
       const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
       const ctrl = new CameraController(c, cam);
       ctrl.followPlanet = { mesh: new THREE.Mesh(), def: { radius: 1 } };
-      ctrl.explorerMode = false;
+      expect(ctrl._followDistanceScale).toBe(1);
+      window.dispatchEvent(new WheelEvent('wheel', { deltaY: 100 }));
+      expect(ctrl._followDistanceScale).toBeGreaterThan(1);
+    });
+
+    it('adjusts follow orbit zoom scale on wheel when following comet', () => {
+      const c = makeContainer();
+      const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
+      const ctrl = new CameraController(c, cam);
+      ctrl.followComet = { getHeadWorldPosition: () => {}, getFollowOrbitRadius: () => 0.05 };
       expect(ctrl._followDistanceScale).toBe(1);
       window.dispatchEvent(new WheelEvent('wheel', { deltaY: 100 }));
       expect(ctrl._followDistanceScale).toBeGreaterThan(1);
@@ -229,16 +269,19 @@ describe('CameraController', () => {
       expect(ctrl.mouseY).toBe(0);
     });
 
-    it('moves camera forward when W key is pressed', () => {
+    it('keeps orbit follow when W is held with fallback lock', () => {
       const c = makeContainer();
       const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
       cam.position.set(0, 0, 50);
       const ctrl = new CameraController(c, cam);
+      const fallback = { mesh: new THREE.Mesh(), def: { radius: 1 } };
+      ctrl._fallbackFollowPlanet = fallback;
       ctrl.zoomActive = false;
       ctrl.keys.w = true;
-      const before = cam.position.z;
+      ctrl.update(0.016);
+      expect(ctrl.followPlanet).toBe(fallback);
       ctrl.update(0.1);
-      expect(cam.position.z).not.toBe(before);
+      expect(ctrl.followPlanet).toBe(fallback);
     });
 
     it('does not move camera when no keys pressed and zoom inactive', () => {
@@ -265,30 +308,15 @@ describe('CameraController', () => {
       expect(cam.position.z).toBeLessThan(before);
     });
 
-    it('does not disengage planet follow on WASD when locked (not exploring)', () => {
+    it('does not disengage planet follow on WASD when orbit-locked', () => {
       const c = makeContainer();
       const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
       const ctrl = new CameraController(c, cam);
       const planet = { mesh: new THREE.Mesh(), def: { radius: 1 } };
       ctrl.followPlanet = planet;
-      ctrl.explorerMode = false;
       ctrl.keys.w = true;
       ctrl.update(0.016);
       expect(ctrl.followPlanet).toBe(planet);
-    });
-
-    it('uses free camera when explorerMode even if followPlanet is set', () => {
-      const c = makeContainer();
-      const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
-      cam.position.set(0, 0, 100);
-      const ctrl = new CameraController(c, cam);
-      ctrl.followPlanet = { mesh: new THREE.Mesh(), def: { radius: 1 } };
-      ctrl.explorerMode = true;
-      ctrl.zoomActive = false;
-      const before = cam.position.clone();
-      ctrl.keys.w = true;
-      ctrl.update(0.1);
-      expect(cam.position.distanceTo(before)).toBeGreaterThan(0.01);
     });
 
     it('lerps sun scale down when following a planet', () => {
@@ -344,6 +372,16 @@ describe('CameraController', () => {
       expect(spy).toHaveBeenCalledWith('touchstart', expect.any(Function), { passive: true });
       expect(spy).toHaveBeenCalledWith('touchmove', expect.any(Function), { passive: true });
       expect(spy).toHaveBeenCalledWith('touchend', expect.any(Function), { passive: true });
+    });
+
+    it('stores first planet as fallback follow target', () => {
+      const c = makeContainer();
+      const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
+      const ctrl = new CameraController(c, cam);
+      const rend = new THREE.WebGLRenderer();
+      const ss = new SolarSystem(true);
+      ctrl.setupFollowHandler(rend, ss.planets);
+      expect(ctrl._fallbackFollowPlanet).toBe(ss.planets[0]);
     });
   });
 });

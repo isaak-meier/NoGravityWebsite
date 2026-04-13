@@ -1,5 +1,11 @@
 import * as THREE from "three";
+import { createCometHeadStyleMesh } from "./comet-head-mesh.js";
 import { attachPlanetInteriorGoop } from "./planet-goop-material.js";
+
+/** World-space radius of the sun mesh (matches previous SphereGeometry(6) size). */
+const SUN_WORLD_RADIUS = 6;
+/** Warm cream aligned with scene PointLight (`_setupLights`). */
+const SUN_HEAD_COLOR = 0xfff3d6;
 
 const PLANET_DEFS = [
   { color: 0x60a5fa, radius: 0.9, orbit: 12, speed: 0.3,  label: "Blue"   },
@@ -12,6 +18,9 @@ const PLANET_DEFS = [
 class SolarSystem {
   constructor(isMobile = false) {
     this.isMobile = isMobile;
+    this._brightness = 0.4;
+    this._targetBrightness = 0.4;
+    this._spectrumResponse = 1.35;
     this.sun = this._createSun();
     this.sunLight = null;
     this.planets = PLANET_DEFS.map((def) => this._createPlanet(def));
@@ -49,15 +58,27 @@ class SolarSystem {
       }
     }
     this.starField.rotation.y += dt * 0.001;
+
+    this._brightness += (this._targetBrightness - this._brightness) * 0.1;
+    const b = Math.min(Math.max(this._brightness, 0.42), 2.0);
+    if (this._sunMat) {
+      this._sunMat.opacity = Math.min(0.5 + b * 0.35, 0.95);
+    }
+  }
+
+  /**
+   * Same loudness mapping as {@link Comet#setLoudness} (spectrum-driven pulsing).
+   * @param {number} loudness
+   */
+  setLoudness(loudness) {
+    this._targetBrightness = 0.32 + loudness * this._spectrumResponse;
   }
 
   _createSun() {
-    const segs = this.isMobile ? 24 : 48;
-    const geo = new THREE.SphereGeometry(6, segs, segs); // Increased radius from 3 to 6
-    const mat = new THREE.MeshBasicMaterial({ color: 0xffcc33 });
-    const sun = new THREE.Mesh(geo, mat);
-    sun.layers.enable(1);
-    return sun;
+    const { mesh, material } = createCometHeadStyleMesh(SUN_WORLD_RADIUS, SUN_HEAD_COLOR);
+    this._sunMat = material;
+    mesh.layers.enable(1);
+    return mesh;
   }
 
   _createPlanet(def) {

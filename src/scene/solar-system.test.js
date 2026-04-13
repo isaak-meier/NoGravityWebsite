@@ -66,19 +66,20 @@ describe('SolarSystem', () => {
       expect(ss.starField).toBeInstanceOf(THREE.Points);
     });
 
-    it('sun has yellow MeshBasicMaterial', () => {
+    it('sun has warm translucent MeshBasicMaterial (comet-head style)', () => {
       const ss = new SolarSystem(false);
-      expect(ss.sun.material.color.getHex()).toBe(0xffcc33);
+      expect(ss.sun.material.color.getHex()).toBe(0xfff3d6);
+      expect(ss.sun.material.transparent).toBe(true);
     });
 
-    it('desktop sun uses 48 segments', () => {
+    it('sun uses 12 segments like comet head (desktop)', () => {
       const ss = new SolarSystem(false);
-      expect(ss.sun.geometry.parameters.widthSegments).toBe(48);
+      expect(ss.sun.geometry.parameters.widthSegments).toBe(12);
     });
 
-    it('mobile sun uses 24 segments', () => {
+    it('sun uses 12 segments like comet head (mobile)', () => {
       const ss = new SolarSystem(true);
-      expect(ss.sun.geometry.parameters.widthSegments).toBe(24);
+      expect(ss.sun.geometry.parameters.widthSegments).toBe(12);
     });
 
     it('each planet has mesh, material, pivot, def, and interior goop', () => {
