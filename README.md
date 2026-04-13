@@ -1,7 +1,7 @@
 # NoGravityWebsite
 
 NXGRXVIY website. Planet with shards, audio loading from google drive, some fun math. 
-Live at [Lnxgrxvity.com](nxgrxvity.com)!!
+Live at [nxgrxvity.com](www.nxgrxvity.com)!!
 
 ## Run locally
 
