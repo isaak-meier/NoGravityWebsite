@@ -21,7 +21,7 @@ const defaults = {
   songPromotion: {
     hypedditUrl: "https://hypeddit.com/nxgrxvity/planetcool",
     title: "stream planet cool",
-    buttonLabel: "execute",
+    buttonLabel: "teleport",
   },
   /**
    * Backend API — required for the mailing panel and optional auth UI.
@@ -30,6 +30,13 @@ const defaults = {
    */
   api: {
     baseUrl: "https://api.nxgrxvity.com",
+  },
+  /**
+   * Magic-link sign-in pill inside the planet HUD. Off by default; set `enabled: true` in app-config.local.json to show.
+   * @type {{ enabled: boolean }}
+   */
+  authUi: {
+    enabled: false,
   },
 };
 
@@ -61,11 +68,16 @@ async function buildConfig() {
     raw?.api && typeof raw.api === "object"
       ? { ...defaults.api, ...raw.api }
       : { ...defaults.api };
+  const authUi =
+    raw?.authUi && typeof raw.authUi === "object"
+      ? { ...defaults.authUi, ...raw.authUi }
+      : { ...defaults.authUi };
   return {
     googleDrive: gd,
     mailingList,
     songPromotion,
     api,
+    authUi,
   };
 }
 
