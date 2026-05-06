@@ -379,9 +379,11 @@ describe('SolarSystem', () => {
       const lineProgress = ss.graphLines.geometry.getAttribute('lineProgress');
       const edgePhase = ss.graphLines.geometry.getAttribute('edgePhase');
       const barIndex = ss.graphLines.geometry.getAttribute('barIndex');
+      const blueFanBeam = ss.graphLines.geometry.getAttribute('blueFanBeam');
       expect(lineProgress.count).toBe(positions.count);
       expect(edgePhase.count).toBe(positions.count);
       expect(barIndex.count).toBe(positions.count);
+      expect(blueFanBeam.count).toBe(positions.count);
       expect(ss.graphLines.material.type).toBe('ShaderMaterial');
     });
 

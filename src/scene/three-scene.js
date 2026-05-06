@@ -37,8 +37,6 @@ import { attachPlanetInteriorGoop } from "./planet-goop-material.js";
 import { mountScreenDials } from "../ui/screen-dials.js";
 import { createPlanetMailingPanel } from "../ui/planet-mailing-panel.js";
 import { createPlanetSongPromoPanel } from "../ui/planet-song-promo-panel.js";
-import { createAuthClient } from "../auth/auth-client.js";
-import { createAuthUI } from "../auth/auth-ui.js";
 
 function logNxgrxvityBuildStamp() {
   if (typeof console === "undefined" || !console.log) return;
@@ -1122,13 +1120,6 @@ function initScene() {
     : createPlanetSongPromoPanel(appConfig.songPromotion, {
         visibilityRoot: planetInteriorHud,
       });
-
-  if (appConfig.api?.baseUrl) {
-    const authClient = createAuthClient(appConfig.api);
-    const authUi = createAuthUI(authClient, { siteOrigin: window.location.origin });
-    planetInteriorHud.appendChild(authUi.root);
-    void authClient.refresh();
-  }
 
   planetInteriorHud.appendChild(planetInteriorPanel.root);
   container.appendChild(planetInteriorHud);

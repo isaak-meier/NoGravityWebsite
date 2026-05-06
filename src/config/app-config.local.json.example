@@ -8,9 +8,9 @@
     "emailFieldName": "EMAIL"
   },
   "songPromotion": {
-    "hypedditUrl": "https://hypeddit.com/link/your-link-here",
-    "title": "New single",
-    "buttonLabel": "Listen on Hypeddit"
+    "hypedditUrl": "https://hypeddit.com/nxgrxvity/planetcool",
+    "title": "stream planet cool",
+    "buttonLabel": "execute"
   },
   "api": {
     "baseUrl": "http://127.0.0.1:8787"

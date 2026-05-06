@@ -27,11 +27,11 @@ export function createPlanetSongPromoPanel(songPromotion = {}, opts = {}) {
   const titleText =
     songPromotion.title != null && String(songPromotion.title).trim()
       ? String(songPromotion.title).trim()
-      : "New single";
+      : "stream planet cool";
   const buttonLabel =
     songPromotion.buttonLabel != null && String(songPromotion.buttonLabel).trim()
       ? String(songPromotion.buttonLabel).trim()
-      : "Listen on Hypeddit";
+      : "teleport";
 
   const root = document.createElement("div");
   root.className = "planet-mailing-panel planet-mailing-panel--promo";

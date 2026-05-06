@@ -512,7 +512,7 @@ function graphBeamSegmentSubCount(di, dj, i, j) {
 /**
  * @param {{ ptr: number, globalSeg: number }} state
  */
-function pushHubHubGraphLasers(state, verts, lineProgress, edgePhase, barIndex, centers, i, j, beams, spacingScale) {
+function pushHubHubGraphLasers(state, verts, lineProgress, edgePhase, barIndex, blueFanBeam, centers, i, j, beams, spacingScale) {
   const phase = Math.random() * Math.PI * 2;
   for (let b = 0; b < beams; b++) {
     const g = graphBeamSegment(centers, i, j, b, spacingScale);
@@ -531,13 +531,15 @@ function pushHubHubGraphLasers(state, verts, lineProgress, edgePhase, barIndex, 
     const bi = seg % GRAPH_EQ_BAR_COUNT;
     barIndex[seg * 2] = bi;
     barIndex[seg * 2 + 1] = bi;
+    blueFanBeam[seg * 2] = -1;
+    blueFanBeam[seg * 2 + 1] = -1;
   }
 }
 
 /**
  * @param {{ ptr: number, globalSeg: number }} state
  */
-function pushBlueHubGraphLasers(state, verts, lineProgress, edgePhase, barIndex, centers, j, spacingScale) {
+function pushBlueHubGraphLasers(state, verts, lineProgress, edgePhase, barIndex, blueFanBeam, centers, j, spacingScale) {
   const phase = Math.random() * Math.PI * 2;
   for (let b = 0; b < GRAPH_BLUE_HUB_BEAM_COUNT; b++) {
     const g = graphBlueHubFanBeam(centers, j, b, spacingScale);
@@ -556,13 +558,15 @@ function pushBlueHubGraphLasers(state, verts, lineProgress, edgePhase, barIndex,
     const bi = seg % GRAPH_EQ_BAR_COUNT;
     barIndex[seg * 2] = bi;
     barIndex[seg * 2 + 1] = bi;
+    blueFanBeam[seg * 2] = b;
+    blueFanBeam[seg * 2 + 1] = b;
   }
 }
 
 /**
  * @param {{ ptr: number, globalSeg: number }} state
  */
-function pushLeafGraphLasers(state, verts, lineProgress, edgePhase, barIndex, centers, leafIdx, chordLen, edgeIdx, beams) {
+function pushLeafGraphLasers(state, verts, lineProgress, edgePhase, barIndex, blueFanBeam, centers, leafIdx, chordLen, edgeIdx, beams) {
   for (let b = 0; b < beams; b++) {
     const g = graphLeafRaySegment(centers, leafIdx, chordLen, edgeIdx, b);
     verts[state.ptr++] = g.ax;
@@ -580,6 +584,8 @@ function pushLeafGraphLasers(state, verts, lineProgress, edgePhase, barIndex, ce
     const bi = seg % GRAPH_EQ_BAR_COUNT;
     barIndex[seg * 2] = bi;
     barIndex[seg * 2 + 1] = bi;
+    blueFanBeam[seg * 2] = -1;
+    blueFanBeam[seg * 2 + 1] = -1;
   }
 }
 
@@ -1178,12 +1184,13 @@ class SolarSystem {
    * @returns {import("three").LineSegments}
    */
   _createGraphEdges() {
-    const { verts, lineProgress, edgePhase, barIndex } = this._buildGraphEdgeGeometryArrays();
+    const { verts, lineProgress, edgePhase, barIndex, blueFanBeam } = this._buildGraphEdgeGeometryArrays();
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(verts, 3));
     geo.setAttribute("lineProgress", new THREE.BufferAttribute(lineProgress, 1));
     geo.setAttribute("edgePhase", new THREE.BufferAttribute(edgePhase, 1));
     geo.setAttribute("barIndex", new THREE.BufferAttribute(barIndex, 1));
+    geo.setAttribute("blueFanBeam", new THREE.BufferAttribute(blueFanBeam, 1));
     const mat = createGraphLaserLineMaterial();
     this._graphLineMat = mat;
     return new THREE.LineSegments(geo, mat);
@@ -1191,7 +1198,7 @@ class SolarSystem {
 
   /**
    * Edge endpoints plus per-vertex shader attributes (0..1 along each segment; phase per beam).
-   * @returns {{ verts: Float32Array, lineProgress: Float32Array, edgePhase: Float32Array, barIndex: Float32Array }}
+   * @returns {{ verts: Float32Array, lineProgress: Float32Array, edgePhase: Float32Array, barIndex: Float32Array, blueFanBeam: Float32Array }}
    */
   _buildGraphEdgeGeometryArrays() {
     const s = this._spacingScale;
@@ -1208,6 +1215,7 @@ class SolarSystem {
     const lineProgress = new Float32Array(nSeg * 2);
     const edgePhase = new Float32Array(nSeg * 2);
     const barIndex = new Float32Array(nSeg * 2);
+    const blueFanBeam = new Float32Array(nSeg * 2);
     const state = { ptr: 0, globalSeg: 0 };
 
     for (let edgeIdx = 0; edgeIdx < edgeList.length; edgeIdx++) {
@@ -1230,34 +1238,36 @@ class SolarSystem {
 
       if (di > 1 && dj > 1) {
         if (i === 0) {
-          pushBlueHubGraphLasers(state, verts, lineProgress, edgePhase, barIndex, positions, j, s);
+          pushBlueHubGraphLasers(state, verts, lineProgress, edgePhase, barIndex, blueFanBeam, positions, j, s);
         } else {
-          pushHubHubGraphLasers(state, verts, lineProgress, edgePhase, barIndex, positions, i, j, beams, s);
+          pushHubHubGraphLasers(state, verts, lineProgress, edgePhase, barIndex, blueFanBeam, positions, i, j, beams, s);
         }
       } else if (di === 1 && dj > 1) {
-        pushLeafGraphLasers(state, verts, lineProgress, edgePhase, barIndex, positions, i, chordLen, edgeIdx, beams);
+        pushLeafGraphLasers(state, verts, lineProgress, edgePhase, barIndex, blueFanBeam, positions, i, chordLen, edgeIdx, beams);
       } else if (dj === 1 && di > 1) {
-        pushLeafGraphLasers(state, verts, lineProgress, edgePhase, barIndex, positions, j, chordLen, edgeIdx, beams);
+        pushLeafGraphLasers(state, verts, lineProgress, edgePhase, barIndex, blueFanBeam, positions, j, chordLen, edgeIdx, beams);
       } else {
-        pushLeafGraphLasers(state, verts, lineProgress, edgePhase, barIndex, positions, i, chordLen, edgeIdx, beams);
-        pushLeafGraphLasers(state, verts, lineProgress, edgePhase, barIndex, positions, j, chordLen, edgeIdx, beams);
+        pushLeafGraphLasers(state, verts, lineProgress, edgePhase, barIndex, blueFanBeam, positions, i, chordLen, edgeIdx, beams);
+        pushLeafGraphLasers(state, verts, lineProgress, edgePhase, barIndex, blueFanBeam, positions, j, chordLen, edgeIdx, beams);
       }
     }
-    return { verts, lineProgress, edgePhase, barIndex };
+    return { verts, lineProgress, edgePhase, barIndex, blueFanBeam };
   }
 
   /** Refresh the graph-line geometry in place after a spacing change. */
   _rebuildGraphEdgeGeometry() {
-    const { verts, lineProgress, edgePhase, barIndex } = this._buildGraphEdgeGeometryArrays();
+    const { verts, lineProgress, edgePhase, barIndex, blueFanBeam } = this._buildGraphEdgeGeometryArrays();
     const geo = this.graphLines.geometry;
     geo.setAttribute("position", new THREE.BufferAttribute(verts, 3));
     geo.setAttribute("lineProgress", new THREE.BufferAttribute(lineProgress, 1));
     geo.setAttribute("edgePhase", new THREE.BufferAttribute(edgePhase, 1));
     geo.setAttribute("barIndex", new THREE.BufferAttribute(barIndex, 1));
+    geo.setAttribute("blueFanBeam", new THREE.BufferAttribute(blueFanBeam, 1));
     geo.attributes.position.needsUpdate = true;
     geo.attributes.lineProgress.needsUpdate = true;
     geo.attributes.edgePhase.needsUpdate = true;
     geo.attributes.barIndex.needsUpdate = true;
+    geo.attributes.blueFanBeam.needsUpdate = true;
   }
 
   /** @returns {Array<[number, number, number]>} */

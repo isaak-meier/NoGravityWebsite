@@ -1,7 +1,10 @@
 import * as THREE from "three";
 
 /**
- * @returns {THREE.ShaderMaterial} Additive line material with traveling “beam” pulses (see {@link SolarSystem} graph edges).
+ * Additive graph-edge line material (traveling pulses). Blue hub fan beams use attribute `blueFanBeam`
+ * (0..7); the fragment shader rotates four choreographies every 4.5s: all pulse together, single-beam
+ * chase 0→7, ping-pong along the fan, then adjacent pairs.
+ * @returns {THREE.ShaderMaterial}
  */
 export function createGraphLaserLineMaterial() {
   return new THREE.ShaderMaterial({
@@ -18,14 +21,18 @@ export function createGraphLaserLineMaterial() {
       attribute float lineProgress;
       attribute float edgePhase;
       attribute float barIndex;
+      /** -1 = normal graph beam; 0..7 = blue hub fan beam slot (see fragment choreo). */
+      attribute float blueFanBeam;
       varying float vLineT;
       varying float vPhase;
       varying float vBarIdx;
+      varying float vBlueFanBeam;
 
       void main() {
         vLineT = lineProgress;
         vPhase = edgePhase;
         vBarIdx = barIndex;
+        vBlueFanBeam = blueFanBeam;
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }
     `,
@@ -33,6 +40,7 @@ export function createGraphLaserLineMaterial() {
       varying float vLineT;
       varying float vPhase;
       varying float vBarIdx;
+      varying float vBlueFanBeam;
       uniform float uTime;
       uniform float uMusicPulse;
       uniform float uBass;
@@ -56,6 +64,27 @@ export function createGraphLaserLineMaterial() {
         return dot(uBars0to3, w0) + dot(uBars4to7, w1);
       }
 
+      float blueFanChoreoMul(float slot, float t) {
+        if (slot < -0.5) return 1.0;
+        float pat = mod(floor(t / 4.5), 4.0);
+        float dim = 0.11;
+        if (pat < 0.5) {
+          return dim + (1.0 - dim) * (sin(t * 2.8) * 0.5 + 0.5);
+        }
+        if (pat < 1.5) {
+          float idx = mod(floor(t * 2.35), 8.0);
+          return abs(slot - idx) < 0.45 ? 1.0 : dim;
+        }
+        if (pat < 2.5) {
+          float cy = mod(floor(t * 2.05), 15.0);
+          float idx = cy < 8.0 ? cy : 14.0 - cy;
+          return abs(slot - idx) < 0.45 ? 1.0 : dim;
+        }
+        float pairStep = mod(floor(t * 1.65), 4.0);
+        float myPair = floor(slot * 0.5 + 0.25);
+        return abs(myPair - pairStep) < 0.45 ? 1.0 : dim;
+      }
+
       void main() {
         float speed = 3.5 + uMusicPulse * 7.0 + uBass * 4.0;
         float travel = vLineT * 9.0 - uTime * speed + vPhase;
@@ -68,6 +97,7 @@ export function createGraphLaserLineMaterial() {
         float eqLvl = eqBarLevel(vBarIdx);
         float barGate = step(0.14, eqLvl);
         alpha *= barGate;
+        alpha *= blueFanChoreoMul(vBlueFanBeam, uTime);
         alpha *= clamp(uLaserCycle, 0.0, 1.0);
         vec3 core = mix(vec3(0.25, 0.95, 1.0), vec3(1.0, 0.55, 1.0), beam);
         vec3 glow = mix(vec3(0.5, 0.85, 1.0), vec3(1.0, 0.9, 1.0), tip);
