@@ -1,17 +1,19 @@
 import * as THREE from "three";
-import { createCometHeadStyleMesh } from "./comet-head-mesh.js";
 import { attachPlanetInteriorGoop } from "./planet-goop-material.js";
 import { createGraphLaserLineMaterial } from "./graph-laser-line-material.js";
 
-/** World-space radius of the sun mesh (matches previous SphereGeometry(6) size). */
-const SUN_WORLD_RADIUS = 6;
-/** Warm cream aligned with scene PointLight (`_setupLights`). */
-const SUN_HEAD_COLOR = 0xfff3d6;
+/** World-space radius of the sun mesh (visual anchor at +X; larger reads stronger in bloom). */
+const SUN_WORLD_RADIUS = 12;
+/** Smooth sphere — not the comet-head mesh helper — so the traveling comet stays visually unique. */
+const SUN_SPHERE_WIDTH_SEGMENTS = 40;
+const SUN_SPHERE_HEIGHT_SEGMENTS = 28;
+/** Warm highlight — slightly lifted toward white vs older cream for a brighter disk. */
+const SUN_HEAD_COLOR = 0xfff9ec;
 
 /**
  * Per-planet star cluster shape: identical to the original global starfield in {@link SolarSystem._createStars}
- * (radius 200–800, 3000 desktop / 1200 mobile, white size-0.6 points). Each planet just gets its own copy
- * translated to its `def.position`, so every cluster looks the same as every other.
+ * (radius 200–800, 3000 desktop / 1200 mobile, white size-0.6 points). Each planet gets its own copy
+ * translated to its `def.position`, so every cluster matches every other.
  */
 const PLANET_CLUSTER_OUTER_RADIUS = 800;
 const PLANET_CLUSTER_INNER_RADIUS = 200;
@@ -31,10 +33,10 @@ const INTERSTITIAL_CLEARANCE = PLANET_CLUSTER_OUTER_RADIUS + 40;
 const INTERSTITIAL_SPIRAL_ARMS = 3;
 /** How many full turns the spiral parameter spans from inner to outer radius. */
 const INTERSTITIAL_SPIRAL_TURNS = 4;
-/** Perpendicular jitter (along spiral plane normal) so the arm reads as a ribbon, not a razor line. */
-const INTERSTITIAL_SPIRAL_JITTER_NORMAL = 220;
+/** Perpendicular jitter (along spiral plane normal) — scaled so arms stay as thick as the old blue-cluster spirals read. */
+const INTERSTITIAL_SPIRAL_JITTER_NORMAL = 275;
 /** Small in-plane jitter so stars do not sit exactly on the analytic curve. */
-const INTERSTITIAL_SPIRAL_JITTER_INPLANE = 140;
+const INTERSTITIAL_SPIRAL_JITTER_INPLANE = 175;
 
 /** Number of nearest neighbors per planet used to build the constellation graph edges. */
 const PLANET_GRAPH_K = 2;
@@ -46,10 +48,17 @@ const PLANET_PICK_PROXY_RADIUS = PLANET_CLUSTER_OUTER_RADIUS;
  * toward the neighbor (laser-split look). Must be ≥ 1.
  */
 const GRAPH_LASER_FAN_BEAMS = 5;
+/**
+ * Hub–hub edges where blue (index 0) is the lower endpoint: one true chord to the neighbor,
+ * plus extra beams that skim past then continue into open space.
+ */
+const GRAPH_BLUE_HUB_BEAM_COUNT = 8;
 /** Half of the fan sweep in radians (beams distributed in the plane ⊥ to the chord). */
 const GRAPH_LASER_FAN_HALF_ANGLE = 0.16;
 /** Target-end ring radius as a fraction of edge length (world units scale with spacing). */
 const GRAPH_LASER_FAN_SPREAD_FRAC = 0.026;
+/** Cap fan offset so beam tips stay near neighbor cores (planet radii are ~1 world unit). */
+const GRAPH_LASER_FAN_MAX_ENDPOINT_OFFSET = 26;
 /** Number of EQ bands that gate laser visibility (matches FFT grouping in {@link spectrumToGraphEqBands}). */
 const GRAPH_EQ_BAR_COUNT = 8;
 
@@ -60,6 +69,19 @@ const GRAPH_EDGE_STAR_COUNT_MOBILE = 1000;
 const GRAPH_EDGE_STAR_CLOUD_FRAC = 0.068;
 /** Max extra slack along the beam as a fraction of edge length. */
 const GRAPH_EDGE_STAR_ALONG_FRAC = 0.042;
+
+/**
+ * Planet positions are hand-picked 3D points so the constellation is visible
+ * from the planet-graph view (~15–20k camera distance). Blue stays at the origin
+ * so the pyramid field, intro orbit, and inside-planet HUD keep working unchanged.
+ */
+const PLANET_DEFS = [
+  { color: 0x60a5fa, radius: 0.9,  position: [    0,     0,     0], speed: 0.3,  label: "Blue"   },
+  { color: 0xf87171, radius: 0.6,  position: [ 3500,   800, -1200], speed: 0.2,  label: "Red"    },
+  { color: 0x4ade80, radius: 1.1,  position: [-2200,  1500,  4800], speed: 0.12, label: "Green"  },
+  { color: 0xfbbf24, radius: 0.5,  position: [ 4200, -1800,  2000], speed: 0.08, label: "Gold"   },
+  { color: 0xa78bfa, radius: 0.75, position: [-3800, -1200, -2500], speed: 0.05, label: "Violet" },
+];
 
 /**
  * Unit-length axes (right, up) spanning the plane perpendicular to chord direction (dx,dy,dz).
@@ -173,10 +195,28 @@ function minDistSqToCenters(px, py, pz, centers) {
 }
 
 /**
- * One graph laser beam segment (matches {@link SolarSystem._buildGraphEdgeGeometryArrays}).
- * @param {number} beamIndex 0 .. {@link GRAPH_LASER_FAN_BEAMS} - 1
+ * Planet centers are `def.position * spacingScale`; recover scale for radius/cap scaling.
  */
-function graphBeamSegment(centers, i, j, beamIndex) {
+function inferSpacingScaleFromCenters(centers) {
+  for (let i = 0; i < centers.length; i++) {
+    const [px, py, pz] = PLANET_DEFS[i].position;
+    const cx = centers[i][0];
+    const cy = centers[i][1];
+    const cz = centers[i][2];
+    if (Math.abs(px) > 1e-6 && Math.abs(cx) > 1e-6) return cx / px;
+    if (Math.abs(py) > 1e-6 && Math.abs(cy) > 1e-6) return cy / py;
+    if (Math.abs(pz) > 1e-6 && Math.abs(cz) > 1e-6) return cz / pz;
+  }
+  return 1;
+}
+
+/**
+ * One graph laser beam segment for a **hub–hub** edge (lower index → neighbor fan). Leaf edges use
+ * {@link graphLeafRaySegment}; stars use {@link resolveGraphBeamSegment}.
+ * @param {number} beamIndex 0 .. {@link GRAPH_LASER_FAN_BEAMS} - 1
+ * @param {number} [spacingScale]
+ */
+function graphBeamSegment(centers, i, j, beamIndex, spacingScale = 1) {
   const ax = centers[i][0];
   const ay = centers[i][1];
   const az = centers[i][2];
@@ -186,8 +226,22 @@ function graphBeamSegment(centers, i, j, beamIndex) {
   const dx = bx - ax;
   const dy = by - ay;
   const dz = bz - az;
-  const edgeLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
-  const spreadR = edgeLen * GRAPH_LASER_FAN_SPREAD_FRAC;
+  const chordLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+  const nx = dx / chordLen;
+  const ny = dy / chordLen;
+  const nz = dz / chordLen;
+  const ri = PLANET_DEFS[i].radius * spacingScale;
+  const rj = PLANET_DEFS[j].radius * spacingScale;
+  const axSurf = ax + nx * ri;
+  const aySurf = ay + ny * ri;
+  const azSurf = az + nz * ri;
+  const bxSurf = bx - nx * rj;
+  const bySurf = by - ny * rj;
+  const bzSurf = bz - nz * rj;
+  const spreadR = Math.min(
+    chordLen * GRAPH_LASER_FAN_SPREAD_FRAC,
+    GRAPH_LASER_FAN_MAX_ENDPOINT_OFFSET * spacingScale,
+  );
   const { rx, ry, rz, ux, uy, uz } = perpendicularPlaneBasis(dx, dy, dz);
   const beams = GRAPH_LASER_FAN_BEAMS;
   const u = beams <= 1 ? 0 : beamIndex / (beams - 1);
@@ -198,13 +252,17 @@ function graphBeamSegment(centers, i, j, beamIndex) {
   const ox = (rx * co + ux * sn) * spreadR;
   const oy = (ry * co + uy * sn) * spreadR;
   const oz = (rz * co + uz * sn) * spreadR;
+  const ex = bxSurf + ox;
+  const ey = bySurf + oy;
+  const ez = bzSurf + oz;
+  const edgeLen = Math.hypot(ex - axSurf, ey - aySurf, ez - azSurf) || 1;
   return {
-    ax,
-    ay,
-    az,
-    ex: bx + ox,
-    ey: by + oy,
-    ez: bz + oz,
+    ax: axSurf,
+    ay: aySurf,
+    az: azSurf,
+    ex,
+    ey,
+    ez,
     edgeLen,
     rx,
     ry,
@@ -212,6 +270,104 @@ function graphBeamSegment(centers, i, j, beamIndex) {
     ux,
     uy,
     uz,
+  };
+}
+
+/**
+ * Hub–hub edge from blue (always canonical `i === 0`) toward planet `j`: beam 0 hits the neighbor
+ * surface; beams 1..7 share the same blue-surface start and extend on near-miss rays into space.
+ * @param {number} beamIndex 0 .. {@link GRAPH_BLUE_HUB_BEAM_COUNT} - 1
+ */
+function graphBlueHubFanBeam(centers, j, beamIndex, spacingScale = 1) {
+  const i = 0;
+  const ax = centers[i][0];
+  const ay = centers[i][1];
+  const az = centers[i][2];
+  const bx = centers[j][0];
+  const by = centers[j][1];
+  const bz = centers[j][2];
+  const dx = bx - ax;
+  const dy = by - ay;
+  const dz = bz - az;
+  const chordLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+  const nx = dx / chordLen;
+  const ny = dy / chordLen;
+  const nz = dz / chordLen;
+  const ri = PLANET_DEFS[i].radius * spacingScale;
+  const rj = PLANET_DEFS[j].radius * spacingScale;
+  const axSurf = ax + nx * ri;
+  const aySurf = ay + ny * ri;
+  const azSurf = az + nz * ri;
+  const bxSurf = bx - nx * rj;
+  const bySurf = by - ny * rj;
+  const bzSurf = bz - nz * rj;
+  const basisChord = perpendicularPlaneBasis(dx, dy, dz);
+  if (beamIndex === 0) {
+    const ex = bxSurf;
+    const ey = bySurf;
+    const ez = bzSurf;
+    const edgeLen = Math.hypot(ex - axSurf, ey - aySurf, ez - azSurf) || 1;
+    return {
+      ax: axSurf,
+      ay: aySurf,
+      az: azSurf,
+      ex,
+      ey,
+      ez,
+      edgeLen,
+      rx: basisChord.rx,
+      ry: basisChord.ry,
+      rz: basisChord.rz,
+      ux: basisChord.ux,
+      uy: basisChord.uy,
+      uz: basisChord.uz,
+    };
+  }
+  const { rx, ry, rz, ux, uy, uz } = basisChord;
+  const sx = bxSurf - axSurf;
+  const sy = bySurf - aySurf;
+  const sz = bzSurf - azSurf;
+  const sLen = Math.hypot(sx, sy, sz) || 1;
+  const uxSurf = sx / sLen;
+  const uySurf = sy / sLen;
+  const uzSurf = sz / sLen;
+  const ang = ((beamIndex - 1) / 7) * Math.PI * 2 * 0.42 + beamIndex * 0.09;
+  const co = Math.cos(ang);
+  const sn = Math.sin(ang);
+  const mix = 0.052 + (beamIndex % 4) * 0.014;
+  const ox = (rx * co + ux * sn) * mix;
+  const oy = (ry * co + uy * sn) * mix;
+  const oz = (rz * co + uz * sn) * mix;
+  let dlx = uxSurf + ox;
+  let dly = uySurf + oy;
+  let dlz = uzSurf + oz;
+  const dlen = Math.hypot(dlx, dly, dlz) || 1;
+  dlx /= dlen;
+  dly /= dlen;
+  dlz /= dlen;
+  const rayMult = 1.72 + beamIndex * 0.085;
+  const rayLen = chordLen * rayMult;
+  const ex = axSurf + dlx * rayLen;
+  const ey = aySurf + dly * rayLen;
+  const ez = azSurf + dlz * rayLen;
+  const rdx = ex - axSurf;
+  const rdy = ey - aySurf;
+  const rdz = ez - azSurf;
+  const basisRay = perpendicularPlaneBasis(rdx, rdy, rdz);
+  return {
+    ax: axSurf,
+    ay: aySurf,
+    az: azSurf,
+    ex,
+    ey,
+    ez,
+    edgeLen: rayLen,
+    rx: basisRay.rx,
+    ry: basisRay.ry,
+    rz: basisRay.rz,
+    ux: basisRay.ux,
+    uy: basisRay.uy,
+    uz: basisRay.uz,
   };
 }
 
@@ -295,7 +451,7 @@ function countGraphLaserSegments(edgeList, deg, beams) {
     const [i, j] = key.split("-").map(Number);
     const di = deg[i];
     const dj = deg[j];
-    if (di > 1 && dj > 1) n += beams;
+    if (di > 1 && dj > 1) n += i === 0 ? GRAPH_BLUE_HUB_BEAM_COUNT : beams;
     else if (di === 1 && dj === 1) n += beams * 2;
     else n += beams;
   }
@@ -329,9 +485,11 @@ function resolveGraphBeamSegment(centers, i, j, di, dj, edgeIdx, subBeamIndex) {
   const dy = by - ay;
   const dz = bz - az;
   const chordLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+  const sInf = inferSpacingScaleFromCenters(centers);
 
   if (di > 1 && dj > 1) {
-    return graphBeamSegment(centers, i, j, subBeamIndex);
+    if (i === 0) return graphBlueHubFanBeam(centers, j, subBeamIndex, sInf);
+    return graphBeamSegment(centers, i, j, subBeamIndex, sInf);
   }
   if (di === 1 && dj > 1) {
     return graphLeafRaySegment(centers, i, chordLen, edgeIdx, subBeamIndex);
@@ -345,10 +503,84 @@ function resolveGraphBeamSegment(centers, i, j, di, dj, edgeIdx, subBeamIndex) {
   return graphLeafRaySegment(centers, j, chordLen, edgeIdx, subBeamIndex - GRAPH_LASER_FAN_BEAMS);
 }
 
-function graphBeamSegmentSubCount(di, dj) {
-  if (di > 1 && dj > 1) return GRAPH_LASER_FAN_BEAMS;
+function graphBeamSegmentSubCount(di, dj, i, j) {
+  if (di > 1 && dj > 1) return i === 0 ? GRAPH_BLUE_HUB_BEAM_COUNT : GRAPH_LASER_FAN_BEAMS;
   if (di === 1 && dj === 1) return GRAPH_LASER_FAN_BEAMS * 2;
   return GRAPH_LASER_FAN_BEAMS;
+}
+
+/**
+ * @param {{ ptr: number, globalSeg: number }} state
+ */
+function pushHubHubGraphLasers(state, verts, lineProgress, edgePhase, barIndex, centers, i, j, beams, spacingScale) {
+  const phase = Math.random() * Math.PI * 2;
+  for (let b = 0; b < beams; b++) {
+    const g = graphBeamSegment(centers, i, j, b, spacingScale);
+    verts[state.ptr++] = g.ax;
+    verts[state.ptr++] = g.ay;
+    verts[state.ptr++] = g.az;
+    verts[state.ptr++] = g.ex;
+    verts[state.ptr++] = g.ey;
+    verts[state.ptr++] = g.ez;
+    const seg = state.globalSeg++;
+    const phaseB = phase + b * 0.07;
+    lineProgress[seg * 2] = 0;
+    lineProgress[seg * 2 + 1] = 1;
+    edgePhase[seg * 2] = phaseB;
+    edgePhase[seg * 2 + 1] = phaseB;
+    const bi = seg % GRAPH_EQ_BAR_COUNT;
+    barIndex[seg * 2] = bi;
+    barIndex[seg * 2 + 1] = bi;
+  }
+}
+
+/**
+ * @param {{ ptr: number, globalSeg: number }} state
+ */
+function pushBlueHubGraphLasers(state, verts, lineProgress, edgePhase, barIndex, centers, j, spacingScale) {
+  const phase = Math.random() * Math.PI * 2;
+  for (let b = 0; b < GRAPH_BLUE_HUB_BEAM_COUNT; b++) {
+    const g = graphBlueHubFanBeam(centers, j, b, spacingScale);
+    verts[state.ptr++] = g.ax;
+    verts[state.ptr++] = g.ay;
+    verts[state.ptr++] = g.az;
+    verts[state.ptr++] = g.ex;
+    verts[state.ptr++] = g.ey;
+    verts[state.ptr++] = g.ez;
+    const seg = state.globalSeg++;
+    const phaseB = phase + b * 0.07;
+    lineProgress[seg * 2] = 0;
+    lineProgress[seg * 2 + 1] = 1;
+    edgePhase[seg * 2] = phaseB;
+    edgePhase[seg * 2 + 1] = phaseB;
+    const bi = seg % GRAPH_EQ_BAR_COUNT;
+    barIndex[seg * 2] = bi;
+    barIndex[seg * 2 + 1] = bi;
+  }
+}
+
+/**
+ * @param {{ ptr: number, globalSeg: number }} state
+ */
+function pushLeafGraphLasers(state, verts, lineProgress, edgePhase, barIndex, centers, leafIdx, chordLen, edgeIdx, beams) {
+  for (let b = 0; b < beams; b++) {
+    const g = graphLeafRaySegment(centers, leafIdx, chordLen, edgeIdx, b);
+    verts[state.ptr++] = g.ax;
+    verts[state.ptr++] = g.ay;
+    verts[state.ptr++] = g.az;
+    verts[state.ptr++] = g.ex;
+    verts[state.ptr++] = g.ey;
+    verts[state.ptr++] = g.ez;
+    const seg = state.globalSeg++;
+    const phaseB = Math.random() * Math.PI * 2 + b * 0.07;
+    lineProgress[seg * 2] = 0;
+    lineProgress[seg * 2 + 1] = 1;
+    edgePhase[seg * 2] = phaseB;
+    edgePhase[seg * 2 + 1] = phaseB;
+    const bi = seg % GRAPH_EQ_BAR_COUNT;
+    barIndex[seg * 2] = bi;
+    barIndex[seg * 2 + 1] = bi;
+  }
 }
 
 /**
@@ -377,7 +609,7 @@ function buildGraphEdgeStarPositions(centers, count, clearance) {
     const ja = Number(jStr);
     const di = deg[ia];
     const dja = deg[ja];
-    const nSub = graphBeamSegmentSubCount(di, dja);
+    const nSub = graphBeamSegmentSubCount(di, dja, ia, ja);
     const sub = Math.floor(Math.random() * nSub);
     const seg = resolveGraphBeamSegment(centers, ia, ja, di, dja, ki, sub);
     const t = Math.random();
@@ -427,7 +659,7 @@ function edgeStarFillTail(out, placed, count, centers, edgeKeys, deg, minD2) {
     const ja = Number(jStr);
     const di = deg[ia];
     const dja = deg[ja];
-    const nSub = graphBeamSegmentSubCount(di, dja);
+    const nSub = graphBeamSegmentSubCount(di, dja, ia, ja);
     const sub = Math.floor(Math.random() * nSub);
     const seg = resolveGraphBeamSegment(centers, ia, ja, di, dja, ki, sub);
     const t = Math.random();
@@ -646,19 +878,6 @@ function spiralFillTail(out, placed, count, hub, centers, basis, minD2, rMin, th
   }
 }
 
-/**
- * Planet positions are hand-picked 3D points so the constellation is visible
- * from the planet-graph view (~15–20k camera distance). Blue stays at the origin
- * so the pyramid field, intro orbit, and inside-planet HUD keep working unchanged.
- */
-const PLANET_DEFS = [
-  { color: 0x60a5fa, radius: 0.9,  position: [    0,     0,     0], speed: 0.3,  label: "Blue"   },
-  { color: 0xf87171, radius: 0.6,  position: [ 3500,   800, -1200], speed: 0.2,  label: "Red"    },
-  { color: 0x4ade80, radius: 1.1,  position: [-2200,  1500,  4800], speed: 0.12, label: "Green"  },
-  { color: 0xfbbf24, radius: 0.5,  position: [ 4200, -1800,  2000], speed: 0.08, label: "Gold"   },
-  { color: 0xa78bfa, radius: 0.75, position: [-3800, -1200, -2500], speed: 0.05, label: "Violet" },
-];
-
 class SolarSystem {
   constructor(isMobile = false) {
     this.isMobile = isMobile;
@@ -688,6 +907,14 @@ class SolarSystem {
     /** Smoothed 0..1 levels per EQ bar for laser on/off gating. */
     this._graphEqSm = new Float32Array(GRAPH_EQ_BAR_COUNT);
     this._graphEqTarget = new Float32Array(GRAPH_EQ_BAR_COUNT);
+    /**
+     * Decoded-track laser windows: distinct 16-bar chunk indices (0-based) with highest RMS.
+     * `null` = file not analyzed yet (lasers stay off). `[]` = failed / no chunks → legacy 8-bar blink.
+     * Ignored for live/mic (`audioCurrentTime` null in {@link #setGraphLaserEightBarPhase}).
+     */
+    this._graphLaserHotChunkIndices = null;
+    /** `null` = follow music analysis; `'on'` / `'off'` = user override (see {@link #setGraphLaserManualOverride}). */
+    this._graphLaserManualOverride = null;
   }
 
   get primary() {
@@ -823,7 +1050,7 @@ class SolarSystem {
     this._brightness += (this._targetBrightness - this._brightness) * 0.1;
     const b = Math.min(Math.max(this._brightness, 0.42), 2.0);
     if (this._sunMat) {
-      this._sunMat.opacity = Math.min(0.5 + b * 0.35, 0.95);
+      this._sunMat.opacity = Math.min(0.62 + b * 0.38, 1.0);
     }
   }
 
@@ -860,8 +1087,18 @@ class SolarSystem {
   }
 
   _createSun() {
-    const { mesh, material } = createCometHeadStyleMesh(SUN_WORLD_RADIUS, SUN_HEAD_COLOR);
-    this._sunMat = material;
+    const geo = new THREE.SphereGeometry(
+      SUN_WORLD_RADIUS,
+      SUN_SPHERE_WIDTH_SEGMENTS,
+      SUN_SPHERE_HEIGHT_SEGMENTS,
+    );
+    const mat = new THREE.MeshBasicMaterial({
+      color: SUN_HEAD_COLOR,
+      transparent: true,
+      opacity: 0.97,
+    });
+    this._sunMat = mat;
+    const mesh = new THREE.Mesh(geo, mat);
     mesh.layers.enable(1);
     return mesh;
   }
@@ -971,29 +1208,7 @@ class SolarSystem {
     const lineProgress = new Float32Array(nSeg * 2);
     const edgePhase = new Float32Array(nSeg * 2);
     const barIndex = new Float32Array(nSeg * 2);
-    let ptr = 0;
-    let globalSeg = 0;
-
-    const appendLeafRays = (leafIdx, chordLen, edgeIdx) => {
-      for (let b = 0; b < beams; b++) {
-        const g = graphLeafRaySegment(positions, leafIdx, chordLen, edgeIdx, b);
-        verts[ptr++] = g.ax;
-        verts[ptr++] = g.ay;
-        verts[ptr++] = g.az;
-        verts[ptr++] = g.ex;
-        verts[ptr++] = g.ey;
-        verts[ptr++] = g.ez;
-        const seg = globalSeg++;
-        const phaseB = Math.random() * Math.PI * 2 + b * 0.07;
-        lineProgress[seg * 2] = 0;
-        lineProgress[seg * 2 + 1] = 1;
-        edgePhase[seg * 2] = phaseB;
-        edgePhase[seg * 2 + 1] = phaseB;
-        const bi = seg % GRAPH_EQ_BAR_COUNT;
-        barIndex[seg * 2] = bi;
-        barIndex[seg * 2 + 1] = bi;
-      }
-    };
+    const state = { ptr: 0, globalSeg: 0 };
 
     for (let edgeIdx = 0; edgeIdx < edgeList.length; edgeIdx++) {
       const key = edgeList[edgeIdx];
@@ -1014,41 +1229,18 @@ class SolarSystem {
       const chordLen = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
       if (di > 1 && dj > 1) {
-        const spreadR = chordLen * GRAPH_LASER_FAN_SPREAD_FRAC;
-        const { rx, ry, rz, ux, uy, uz } = perpendicularPlaneBasis(dx, dy, dz);
-        const phase = Math.random() * Math.PI * 2;
-        for (let b = 0; b < beams; b++) {
-          const u = beams <= 1 ? 0 : b / (beams - 1);
-          const t = u * 2 - 1;
-          const ang = t * GRAPH_LASER_FAN_HALF_ANGLE;
-          const c = Math.cos(ang);
-          const sn = Math.sin(ang);
-          const ox = (rx * c + ux * sn) * spreadR;
-          const oy = (ry * c + uy * sn) * spreadR;
-          const oz = (rz * c + uz * sn) * spreadR;
-          verts[ptr++] = ax;
-          verts[ptr++] = ay;
-          verts[ptr++] = az;
-          verts[ptr++] = bx + ox;
-          verts[ptr++] = by + oy;
-          verts[ptr++] = bz + oz;
-          const seg = globalSeg++;
-          const phaseB = phase + b * 0.07;
-          lineProgress[seg * 2] = 0;
-          lineProgress[seg * 2 + 1] = 1;
-          edgePhase[seg * 2] = phaseB;
-          edgePhase[seg * 2 + 1] = phaseB;
-          const bi = seg % GRAPH_EQ_BAR_COUNT;
-          barIndex[seg * 2] = bi;
-          barIndex[seg * 2 + 1] = bi;
+        if (i === 0) {
+          pushBlueHubGraphLasers(state, verts, lineProgress, edgePhase, barIndex, positions, j, s);
+        } else {
+          pushHubHubGraphLasers(state, verts, lineProgress, edgePhase, barIndex, positions, i, j, beams, s);
         }
       } else if (di === 1 && dj > 1) {
-        appendLeafRays(i, chordLen, edgeIdx);
+        pushLeafGraphLasers(state, verts, lineProgress, edgePhase, barIndex, positions, i, chordLen, edgeIdx, beams);
       } else if (dj === 1 && di > 1) {
-        appendLeafRays(j, chordLen, edgeIdx);
+        pushLeafGraphLasers(state, verts, lineProgress, edgePhase, barIndex, positions, j, chordLen, edgeIdx, beams);
       } else {
-        appendLeafRays(i, chordLen, edgeIdx);
-        appendLeafRays(j, chordLen, edgeIdx);
+        pushLeafGraphLasers(state, verts, lineProgress, edgePhase, barIndex, positions, i, chordLen, edgeIdx, beams);
+        pushLeafGraphLasers(state, verts, lineProgress, edgePhase, barIndex, positions, j, chordLen, edgeIdx, beams);
       }
     }
     return { verts, lineProgress, edgePhase, barIndex };
@@ -1137,20 +1329,82 @@ class SolarSystem {
   }
 
   /**
-   * Hide graph lasers for 8 bars, show for the next 8, repeating (aligned to playback time when available).
-   * @param {number | null} audioCurrentTime - seconds; null uses wall clock so live/analyzer-only audio still cycles.
-   * @param {number} barDuration - seconds per 4/4 bar from beat detector (must be > 0).
+   * @param {number[] | null} indices - ascending chunk indices from waveform analysis; `null` clears (pending).
    */
-  setGraphLaserEightBarPhase(audioCurrentTime, barDuration) {
+  setGraphLaserHotChunkIndices(indices) {
+    if (indices == null) {
+      this._graphLaserHotChunkIndices = null;
+      return;
+    }
+    this._graphLaserHotChunkIndices = Array.from(indices, (n) => Math.floor(Number(n))).filter(
+      (n) => Number.isFinite(n) && n >= 0,
+    );
+  }
+
+  /**
+   * @param {'on' | 'off' | null} mode - `null` clears override (music-driven lasers again).
+   */
+  setGraphLaserManualOverride(mode) {
+    if (mode === "on" || mode === "off") {
+      this._graphLaserManualOverride = mode;
+    } else {
+      this._graphLaserManualOverride = null;
+    }
+  }
+
+  /** @returns {'on' | 'off' | null} */
+  getGraphLaserManualOverride() {
+    return this._graphLaserManualOverride;
+  }
+
+  _computeGraphLaserAutoCycle(audioCurrentTime, barDuration) {
     let cycle = 1;
-    if (Number.isFinite(barDuration) && barDuration > 1e-6) {
-      let t =
-        audioCurrentTime != null && Number.isFinite(audioCurrentTime)
-          ? Math.max(0, audioCurrentTime)
-          : performance.now() * 0.001;
+    const hot = this._graphLaserHotChunkIndices;
+    const isFile =
+      audioCurrentTime != null && Number.isFinite(audioCurrentTime) && audioCurrentTime >= 0;
+
+    if (isFile && Number.isFinite(barDuration) && barDuration > 1e-6) {
+      const t = Math.max(0, audioCurrentTime);
+      if (hot != null && hot.length > 0) {
+        const barIdx = Math.floor(t / barDuration);
+        const chunkIdx = Math.floor(barIdx / 16);
+        cycle = hot.includes(chunkIdx) ? 1 : 0;
+      } else if (hot != null && hot.length === 0) {
+        const barIdx = Math.floor(t / barDuration);
+        const chunk = Math.floor(barIdx / 8);
+        cycle = chunk % 2 === 0 ? 1 : 0;
+      } else {
+        cycle = 0;
+      }
+    } else if (Number.isFinite(barDuration) && barDuration > 1e-6) {
+      const t = performance.now() * 0.001;
       const barIdx = Math.floor(t / barDuration);
       const chunk = Math.floor(barIdx / 8);
       cycle = chunk % 2 === 0 ? 1 : 0;
+    }
+    return cycle;
+  }
+
+  /**
+   * **File** (`audioCurrentTime` set): lasers on only during the two loudest 16-bar chunks once
+   * {@link #setGraphLaserHotChunkIndices} is populated; off while analysis is pending (`null`);
+   * if analysis yields no full chunks, falls back to hide/show every 8 bars.
+   *
+   * **Live** (`audioCurrentTime` null): ignores hot chunks; toggles every 8 bars on wall-clock time.
+   *
+   * Override: {@link #setGraphLaserManualOverride} forces visible or hidden regardless of audio.
+   * @param {number | null} audioCurrentTime - seconds; null = live / wall-clock phase.
+   * @param {number} barDuration - seconds per 4/4 bar from beat detector (must be > 0).
+   */
+  setGraphLaserEightBarPhase(audioCurrentTime, barDuration) {
+    const o = this._graphLaserManualOverride;
+    let cycle = 1;
+    if (o === "off") {
+      cycle = 0;
+    } else if (o === "on") {
+      cycle = 1;
+    } else {
+      cycle = this._computeGraphLaserAutoCycle(audioCurrentTime, barDuration);
     }
     if (this._graphLineMat) {
       this._graphLineMat.uniforms.uLaserCycle.value = cycle;
@@ -1192,7 +1446,7 @@ class SolarSystem {
   }
 
   _setupLights(scene) {
-    const sunLight = new THREE.PointLight(0xfff3d6, 6, 300, 0.64); // Increased intensity
+    const sunLight = new THREE.PointLight(0xfff9ec, 14, 520, 0.52);
     sunLight.position.set(0, 0, 0);
     scene.add(sunLight);
     scene.add(new THREE.AmbientLight(0x6b6f88, 0.5)); // Increased ambient
@@ -1208,7 +1462,9 @@ export {
   buildGraphEdgeStarPositions,
   INTERSTITIAL_CLEARANCE,
   GRAPH_LASER_FAN_BEAMS,
+  GRAPH_BLUE_HUB_BEAM_COUNT,
   GRAPH_EQ_BAR_COUNT,
   spectrumToGraphEqBands,
+  countGraphLineVertices,
 };
 export default SolarSystem;

@@ -444,6 +444,15 @@ html, body {
   font-family: "Orbitron", system-ui, sans-serif;
 }
 
+/*
+ * Children (mailing panel, auth) used pointer-events: auto while the wrapper stayed
+ * pointer-events: none — that still lets them receive hits over the canvas when the HUD
+ * is visually hidden (no planet-interior-hud--visible). Force the subtree inert until shown.
+ */
+.planet-interior-hud:not(.planet-interior-hud--visible) * {
+  pointer-events: none !important;
+}
+
 .planet-interior-hud--visible {
   opacity: 1;
   pointer-events: auto;
@@ -597,6 +606,20 @@ html, body {
   box-shadow:
     0 0 0 2px rgba(34, 211, 238, 0.75),
     0 0 16px rgba(34, 211, 238, 0.25);
+}
+
+/* Hypeddit / promo link — same look as submit button (planet-song-promo-panel.js) */
+a.planet-mailing-panel__hypeddit-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.planet-mailing-panel__promo-actions {
+  justify-content: stretch;
 }
 
 .planet-mailing-panel__status {
@@ -999,6 +1022,15 @@ html, body {
 /* Pattern row — select for shatter layout mode */
 .screen-dials .screen-dial--pattern {
   min-width: 12.5rem;
+}
+
+/* Graph lasers — Auto / On / Off (screen-dials.js) */
+.screen-dials .screen-dial--graph-lasers {
+  min-width: 9.5rem;
+}
+
+.screen-dials .cockpit-graph-laser-select {
+  min-width: 6.5rem;
 }
 
 .screen-dials .cockpit-pattern-select {

@@ -11,7 +11,7 @@ export function createGraphLaserLineMaterial() {
       uBass: { value: 0 },
       uBars0to3: { value: new THREE.Vector4(0, 0, 0, 0) },
       uBars4to7: { value: new THREE.Vector4(0, 0, 0, 0) },
-      /** 0 = hidden, 1 = visible — toggles every 8 musical bars (see {@link SolarSystem#setGraphLaserEightBarPhase}). */
+      /** 0 = hidden, 1 = visible — file tracks: two loudest 16-bar windows; live: 8-bar wall clock (see {@link SolarSystem#setGraphLaserEightBarPhase}). */
       uLaserCycle: { value: 1 },
     },
     vertexShader: `

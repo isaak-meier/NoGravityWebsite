@@ -49,6 +49,7 @@ import SolarSystem, {
   GRAPH_LASER_FAN_BEAMS,
   GRAPH_EQ_BAR_COUNT,
   spectrumToGraphEqBands,
+  countGraphLineVertices,
 } from './solar-system.js';
 
 describe('SolarSystem', () => {
@@ -97,20 +98,23 @@ describe('SolarSystem', () => {
       expect(ss.interstitialStars.geometry.getAttribute('position').count).toBe(1800);
     });
 
-    it('sun has warm translucent MeshBasicMaterial (comet-head style)', () => {
+    it('sun has warm translucent MeshBasicMaterial (smooth sphere, not comet-head)', () => {
       const ss = new SolarSystem(false);
-      expect(ss.sun.material.color.getHex()).toBe(0xfff3d6);
+      expect(ss.sun.material.color.getHex()).toBe(0xfff9ec);
       expect(ss.sun.material.transparent).toBe(true);
+      expect(ss.sun.geometry.parameters.radius).toBe(12);
     });
 
-    it('sun uses 12 segments like comet head (desktop)', () => {
+    it('sun uses a higher-resolution sphere than the comet nucleus (desktop)', () => {
       const ss = new SolarSystem(false);
-      expect(ss.sun.geometry.parameters.widthSegments).toBe(12);
+      expect(ss.sun.geometry.parameters.widthSegments).toBe(40);
+      expect(ss.sun.geometry.parameters.heightSegments).toBe(28);
     });
 
-    it('sun uses 12 segments like comet head (mobile)', () => {
+    it('sun uses a higher-resolution sphere than the comet nucleus (mobile)', () => {
       const ss = new SolarSystem(true);
-      expect(ss.sun.geometry.parameters.widthSegments).toBe(12);
+      expect(ss.sun.geometry.parameters.widthSegments).toBe(40);
+      expect(ss.sun.geometry.parameters.heightSegments).toBe(28);
     });
 
     it('each planet has mesh, material, pivot, def, and interior goop', () => {
@@ -369,8 +373,9 @@ describe('SolarSystem', () => {
         d.position[1],
         d.position[2],
       ]);
-      const nEdge = computeKnnEdges(scaled, 2).size;
-      expect(positions.count).toBe(nEdge * GRAPH_LASER_FAN_BEAMS * 2);
+      expect(positions.count).toBe(
+        countGraphLineVertices(computeKnnEdges(scaled, 2), PLANET_DEFS.length, GRAPH_LASER_FAN_BEAMS),
+      );
       const lineProgress = ss.graphLines.geometry.getAttribute('lineProgress');
       const edgePhase = ss.graphLines.geometry.getAttribute('edgePhase');
       const barIndex = ss.graphLines.geometry.getAttribute('barIndex');
@@ -380,8 +385,9 @@ describe('SolarSystem', () => {
       expect(ss.graphLines.material.type).toBe('ShaderMaterial');
     });
 
-    it('setGraphLaserEightBarPhase toggles shader uniform and edge-star opacity every 8 bars', () => {
+    it('setGraphLaserEightBarPhase for file with empty hot chunks: 8-bar blink + star opacity', () => {
       const ss = new SolarSystem(false);
+      ss.setGraphLaserHotChunkIndices([]);
       const bar = 2;
       const mat = ss.graphLines.material;
       expect(mat.uniforms.uLaserCycle.value).toBe(1);
@@ -397,6 +403,52 @@ describe('SolarSystem', () => {
       expect(mat.uniforms.uLaserCycle.value).toBe(1);
       expect(ss.graphEdgeStars.material.opacity).toBeCloseTo(0.82, 5);
       ss.setGraphLaserEightBarPhase(10, NaN);
+      expect(mat.uniforms.uLaserCycle.value).toBe(1);
+    });
+
+    it('setGraphLaserEightBarPhase live path (null time) uses wall clock when bar is finite', () => {
+      const ss = new SolarSystem(false);
+      const bar = 2;
+      const mat = ss.graphLines.material;
+      ss.setGraphLaserEightBarPhase(null, bar);
+      expect([0, 1]).toContain(mat.uniforms.uLaserCycle.value);
+      expect(ss.graphEdgeStars.material.opacity).toBeCloseTo(0.82 * mat.uniforms.uLaserCycle.value, 5);
+    });
+
+    it('setGraphLaserEightBarPhase for file: off until hot chunks set; then only inside 16-bar hot windows', () => {
+      const ss = new SolarSystem(false);
+      const bar = 2;
+      const mat = ss.graphLines.material;
+      ss.setGraphLaserEightBarPhase(0, bar);
+      expect(mat.uniforms.uLaserCycle.value).toBe(0);
+      ss.setGraphLaserHotChunkIndices([0, 2]);
+      ss.setGraphLaserEightBarPhase(0, bar);
+      expect(mat.uniforms.uLaserCycle.value).toBe(1);
+      ss.setGraphLaserEightBarPhase(15 * bar + bar * 0.99, bar);
+      expect(mat.uniforms.uLaserCycle.value).toBe(1);
+      ss.setGraphLaserEightBarPhase(16 * bar, bar);
+      expect(mat.uniforms.uLaserCycle.value).toBe(0);
+      ss.setGraphLaserEightBarPhase(32 * bar, bar);
+      expect(mat.uniforms.uLaserCycle.value).toBe(1);
+      ss.setGraphLaserEightBarPhase(48 * bar, bar);
+      expect(mat.uniforms.uLaserCycle.value).toBe(0);
+    });
+
+    it('setGraphLaserManualOverride forces lasers on or off regardless of hot chunks', () => {
+      const ss = new SolarSystem(false);
+      const bar = 2;
+      const mat = ss.graphLines.material;
+      ss.setGraphLaserHotChunkIndices([0]);
+      ss.setGraphLaserEightBarPhase(32 * bar, bar);
+      expect(mat.uniforms.uLaserCycle.value).toBe(0);
+      ss.setGraphLaserManualOverride('on');
+      ss.setGraphLaserEightBarPhase(32 * bar, bar);
+      expect(mat.uniforms.uLaserCycle.value).toBe(1);
+      ss.setGraphLaserManualOverride('off');
+      ss.setGraphLaserEightBarPhase(0, bar);
+      expect(mat.uniforms.uLaserCycle.value).toBe(0);
+      ss.setGraphLaserManualOverride(null);
+      ss.setGraphLaserEightBarPhase(0, bar);
       expect(mat.uniforms.uLaserCycle.value).toBe(1);
     });
 
@@ -479,7 +531,8 @@ describe('SolarSystem', () => {
       const after = ss.graphLines.geometry.getAttribute('position').array;
       expect(after.length).toBe(before.length);
       for (let i = 0; i < before.length; i++) {
-        expect(after[i]).toBeCloseTo(before[i] * 2, 3);
+        // Hub positions scale linearly; beam tips also apply def.radius along the chord (unscaled), so 2× is not exact.
+        expect(Math.abs(after[i] - before[i] * 2)).toBeLessThan(1.15);
       }
     });
 
@@ -618,6 +671,17 @@ describe('SolarSystem', () => {
       for (let i = 0; i < positions.length; i++) {
         expect(seen.has(i)).toBe(true);
       }
+    });
+  });
+
+  describe('countGraphLineVertices (leaf-aware graph lasers)', () => {
+    it('doubles vertex count for an isolated two-node edge (both degree 1)', () => {
+      const positions = [[0, 0, 0], [100, 0, 0]];
+      const edges = computeKnnEdges(positions, 1);
+      expect(edges.size).toBe(1);
+      expect(countGraphLineVertices(edges, 2, GRAPH_LASER_FAN_BEAMS)).toBe(
+        GRAPH_LASER_FAN_BEAMS * 2 * 2,
+      );
     });
   });
 

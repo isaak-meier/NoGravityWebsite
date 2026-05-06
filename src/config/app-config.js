@@ -4,13 +4,24 @@ const defaults = {
     apiKey: null,
   },
   /**
-   * Planet interior mailing list (field name for the email input only).
-   * @type {{ formAction: string | null, emailFieldName: string, mailtoFallback: string | null }}
+   * Planet interior mailing list. Set `enabled: true` and a valid `api.baseUrl` to show signup again.
+   * While disabled, {@link songPromotion} is shown inside the planet instead.
+   * @type {{ enabled?: boolean, formAction: string | null, emailFieldName: string, mailtoFallback: string | null }}
    */
   mailingList: {
+    enabled: false,
     formAction: null,
     emailFieldName: "EMAIL",
     mailtoFallback: null,
+  },
+  /**
+   * Shown inside the planet when mailing list is disabled. Replace `hypedditUrl` with your track link.
+   * @type {{ hypedditUrl: string, title?: string, buttonLabel?: string }}
+   */
+  songPromotion: {
+    hypedditUrl: "https://hypeddit.com/link/replace-with-your-link",
+    title: "New single",
+    buttonLabel: "Listen on Hypeddit",
   },
   /**
    * Backend API — required for the mailing panel and optional auth UI.
@@ -42,6 +53,10 @@ async function buildConfig() {
     raw?.mailingList && typeof raw.mailingList === "object"
       ? { ...defaults.mailingList, ...raw.mailingList }
       : { ...defaults.mailingList };
+  const songPromotion =
+    raw?.songPromotion && typeof raw.songPromotion === "object"
+      ? { ...defaults.songPromotion, ...raw.songPromotion }
+      : { ...defaults.songPromotion };
   const api =
     raw?.api && typeof raw.api === "object"
       ? { ...defaults.api, ...raw.api }
@@ -49,6 +64,7 @@ async function buildConfig() {
   return {
     googleDrive: gd,
     mailingList,
+    songPromotion,
     api,
   };
 }

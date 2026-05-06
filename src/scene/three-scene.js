@@ -26,11 +26,17 @@ import AudioManager from "./audio-manager.js";
 import Comet from "./comet.js";
 import BeatDetector from "../audio/beat-detector.js";
 import {
+  decodeAudioBufferFromUrl,
+  findTopLoudestBarChunkIndices,
+  mixAudioBufferToMono,
+} from "../audio/laser-chunk-analysis.js";
+import {
   computeSmoothedPlanetScale,
 } from "./planet-pulse.js";
 import { attachPlanetInteriorGoop } from "./planet-goop-material.js";
 import { mountScreenDials } from "../ui/screen-dials.js";
 import { createPlanetMailingPanel } from "../ui/planet-mailing-panel.js";
+import { createPlanetSongPromoPanel } from "../ui/planet-song-promo-panel.js";
 import { createAuthClient } from "../auth/auth-client.js";
 import { createAuthUI } from "../auth/auth-ui.js";
 
@@ -887,6 +893,62 @@ function initScene() {
   if (gui) beatDetector.setupGUI(gui);
 
   const audioState = createAudioState();
+
+  let graphLaserDecodeGen = 0;
+  let graphLaserDecodedBuffer = null;
+  let graphLaserLastAppliedBarDur = 0;
+
+  function invalidateGraphLaserChunkState() {
+    graphLaserDecodeGen++;
+    graphLaserDecodedBuffer = null;
+    graphLaserLastAppliedBarDur = 0;
+    solarSystem.setGraphLaserHotChunkIndices(null);
+    return graphLaserDecodeGen;
+  }
+
+  function applyGraphLaserHotChunksFromDecoded(gen) {
+    if (gen !== graphLaserDecodeGen || !graphLaserDecodedBuffer || audioState._liveStream) return;
+    const el = audioState.audioEl;
+    if (!el) return;
+    const dur =
+      Number.isFinite(el.duration) && el.duration > 0
+        ? el.duration
+        : graphLaserDecodedBuffer.duration;
+    const bar = beatDetector.barDuration;
+    if (!Number.isFinite(bar) || bar <= 1e-6 || !Number.isFinite(dur) || dur <= 0) return;
+    const mono = mixAudioBufferToMono(graphLaserDecodedBuffer);
+    const indices = findTopLoudestBarChunkIndices(
+      mono,
+      graphLaserDecodedBuffer.sampleRate,
+      dur,
+      bar,
+      16,
+      2,
+    );
+    if (gen !== graphLaserDecodeGen) return;
+    solarSystem.setGraphLaserHotChunkIndices(indices.length > 0 ? indices : []);
+    graphLaserLastAppliedBarDur = bar;
+  }
+
+  async function runGraphLaserChunkDecodeAndApply(expectedGen) {
+    const el = audioState.audioEl;
+    const ctx = audioState.fft?.context;
+    if (!el || !ctx || audioState._liveStream) return;
+    const url = el.currentSrc || el.src;
+    if (!url) return;
+    try {
+      const buf = await decodeAudioBufferFromUrl(ctx, url);
+      if (expectedGen !== graphLaserDecodeGen) return;
+      graphLaserDecodedBuffer = buf;
+      applyGraphLaserHotChunksFromDecoded(expectedGen);
+    } catch (err) {
+      console.warn("Graph laser chunk decode failed:", err);
+      if (expectedGen === graphLaserDecodeGen) {
+        solarSystem.setGraphLaserHotChunkIndices([]);
+      }
+    }
+  }
+
   /** Fixed baseline for FFT-driven bloom strength (cockpit bloom dial removed). */
   const bloomBaseline = { multiplier: 1 };
   const bloomSmooth = {
@@ -935,6 +997,19 @@ function initScene() {
     });
 
     beatDetector.update(spectrum);
+
+    if (!audioState._liveStream && graphLaserDecodedBuffer) {
+      const bar = beatDetector.barDuration;
+      if (Number.isFinite(bar) && bar > 1e-6) {
+        const rel =
+          graphLaserLastAppliedBarDur > 0
+            ? Math.abs(bar - graphLaserLastAppliedBarDur) / graphLaserLastAppliedBarDur
+            : 1;
+        if (rel > 0.03) {
+          applyGraphLaserHotChunksFromDecoded(graphLaserDecodeGen);
+        }
+      }
+    }
   };
 
   setupPlanetClickHandler(renderer, camera, sphere, audioState);
@@ -943,22 +1018,25 @@ function initScene() {
     snapshotState = { snapshots: [], frameCount: 0 };
     pyramidField.resetMusicClock();
     syncMusicUi();
+    const gen = invalidateGraphLaserChunkState();
+    if (!audioState._liveStream && audioState.audioEl) {
+      void runGraphLaserChunkDecodeAndApply(gen);
+    }
   };
 
+  const bottomHud = document.createElement("div");
+  bottomHud.className = "bottom-left-hud";
+  container.appendChild(bottomHud);
+  const cockpit = mountScreenDials(bottomHud, {
+    pyramidField,
+    audioState,
+    toggleAudioPlayback,
+    solarSystem,
+  });
+  syncMusicUi = cockpit.syncMusicToggle;
+  setupSongPicker(bottomHud, audioState, onSpectrum, onNewAudioSource, isMobile, beatDetector);
   if (gui) {
-    const bottomHud = document.createElement("div");
-    bottomHud.className = "bottom-left-hud";
-    container.appendChild(bottomHud);
-    const cockpit = mountScreenDials(bottomHud, {
-      pyramidField,
-      audioState,
-      toggleAudioPlayback,
-    });
-    syncMusicUi = cockpit.syncMusicToggle;
-    setupSongPicker(bottomHud, audioState, onSpectrum, onNewAudioSource, isMobile, beatDetector);
     bottomHud.appendChild(gui.domElement);
-  } else {
-    setupSongPicker(container, audioState, onSpectrum, onNewAudioSource, isMobile, beatDetector);
   }
 
   // Camera controller via CameraController class
@@ -1032,9 +1110,18 @@ function initScene() {
   planetInteriorHud.className = "planet-interior-hud";
   planetInteriorHud.setAttribute("aria-hidden", "true");
 
-  const mailingPanel = createPlanetMailingPanel(appConfig, {
-    visibilityRoot: planetInteriorHud,
-  });
+  const useMailingPanel =
+    appConfig.mailingList?.enabled === true &&
+    appConfig.api?.baseUrl &&
+    String(appConfig.api.baseUrl).trim();
+
+  const planetInteriorPanel = useMailingPanel
+    ? createPlanetMailingPanel(appConfig, {
+        visibilityRoot: planetInteriorHud,
+      })
+    : createPlanetSongPromoPanel(appConfig.songPromotion, {
+        visibilityRoot: planetInteriorHud,
+      });
 
   if (appConfig.api?.baseUrl) {
     const authClient = createAuthClient(appConfig.api);
@@ -1043,7 +1130,7 @@ function initScene() {
     void authClient.refresh();
   }
 
-  planetInteriorHud.appendChild(mailingPanel.root);
+  planetInteriorHud.appendChild(planetInteriorPanel.root);
   container.appendChild(planetInteriorHud);
 
   window.addEventListener("resize", () =>
@@ -1064,10 +1151,11 @@ function initScene() {
         : null;
     solarSystem.setGraphLaserEightBarPhase(audioTimeEarly, beatDetector.barDuration);
     solarSystem.update(t);
-    // Keep the comet orbiting around whichever planet the camera is watching
+    const _hudTargetWorld = new THREE.Vector3();
+    (camCtrl.followPlanet ? camCtrl.followPlanet.mesh : sphere).getWorldPosition(_hudTargetWorld);
+    cameraDistanceValueEl.textContent = camera.position.distanceTo(_hudTargetWorld).toFixed(1);
     const _cometAnchor = new THREE.Vector3();
-    (camCtrl.followPlanet ? camCtrl.followPlanet.mesh : sphere).getWorldPosition(_cometAnchor);
-    cameraDistanceValueEl.textContent = camera.position.distanceTo(_cometAnchor).toFixed(1);
+    sphere.getWorldPosition(_cometAnchor);
     comet.setAnchor(_cometAnchor);
     /** Tab backgrounding can make one rAF report multi-second `t`; one `update(t)` shifts the trail once while the head jumps → gap. Sub-step so each shift matches motion. */
     const maxCometStep = 1 / 60;
@@ -1103,7 +1191,7 @@ function initScene() {
       );
     }
     planetGoopOverlay.classList.toggle("planet-goop-overlay--visible", insidePlanet);
-    mailingPanel.setInsidePlanet(insidePlanet);
+    planetInteriorPanel.setInsidePlanet(insidePlanet);
     composer.render();
   })();
 }
