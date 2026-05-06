@@ -36,6 +36,12 @@ describe("planet-song-promo-panel", () => {
       { hypedditUrl: "https://hypeddit.com/x" },
       { visibilityRoot: hud },
     );
+    expect(panel.root.querySelector(".planet-mailing-panel__title").textContent).toBe(
+      "stream planet cool",
+    );
+    expect(panel.root.querySelector("a.planet-mailing-panel__hypeddit-link").textContent).toBe(
+      "teleport",
+    );
     hud.appendChild(panel.root);
     panel.setInsidePlanet(true);
     expect(hud.classList.contains("planet-interior-hud--visible")).toBe(true);

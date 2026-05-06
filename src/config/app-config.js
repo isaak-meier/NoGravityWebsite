@@ -19,9 +19,9 @@ const defaults = {
    * @type {{ hypedditUrl: string, title?: string, buttonLabel?: string }}
    */
   songPromotion: {
-    hypedditUrl: "https://hypeddit.com/link/replace-with-your-link",
-    title: "New single",
-    buttonLabel: "Listen on Hypeddit",
+    hypedditUrl: "https://hypeddit.com/nxgrxvity/planetcool",
+    title: "stream planet cool",
+    buttonLabel: "execute",
   },
   /**
    * Backend API — required for the mailing panel and optional auth UI.
