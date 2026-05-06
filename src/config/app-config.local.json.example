@@ -10,9 +10,12 @@
   "songPromotion": {
     "hypedditUrl": "https://hypeddit.com/nxgrxvity/planetcool",
     "title": "stream planet cool",
-    "buttonLabel": "execute"
+    "buttonLabel": "teleport"
   },
   "api": {
     "baseUrl": "http://127.0.0.1:8787"
+  },
+  "authUi": {
+    "enabled": false
   }
 }

@@ -1123,7 +1123,11 @@ function initScene() {
         visibilityRoot: planetInteriorHud,
       });
 
-  if (appConfig.api?.baseUrl) {
+  if (
+    appConfig.api?.baseUrl &&
+    String(appConfig.api.baseUrl).trim() &&
+    appConfig.authUi?.enabled === true
+  ) {
     const authClient = createAuthClient(appConfig.api);
     const authUi = createAuthUI(authClient, { siteOrigin: window.location.origin });
     planetInteriorHud.appendChild(authUi.root);
