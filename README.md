@@ -1,50 +1,50 @@
 # NoGravityWebsite
 
-NXGRXVIY website. Planet with shards, audio loading from google drive, some fun math. 
+NXGRXVIY website. Planet with shards, audio loading from google drive, some fun math.  
+Live at nxgrxvity.com 
 
-## Run locally
+## Run locally (static site only)
 
 - Install dependencies: `npm install`
 - Start dev server: `npm start`
 - Open: `http://localhost:3000`
 
-## Google Drive auto-load (optional)
+## Full stack local testing (site + API)
 
-`src/config/app-config.js` loads **`app-config.local.json`** next to it (defaults if missing). That file is **gitignored** — do not commit API keys.
+Use this to exercise the mailing list (`POST /api/subscribe`), honeypot, magic-link auth, and admin UI against a local SQLite DB.
 
-**Local dev:** Copy `src/config/app-config.local.json.example` to `app-config.local.json` and set `folderId` and `apiKey`.
+1. **Install both workspaces**
 
-**GitHub Pages:** The [deploy workflow](.github/workflows/deploy.yml) generates `app-config.local.json` **during the deploy job** from secrets `GOOGLE_DRIVE_FOLDER_ID` and `GOOGLE_API_KEY` (repository or `github-pages` environment secrets). The deploy fails if either secret is missing. Restrict your Google API key to your site origin and the Drive API in Google Cloud Console.
+   ```bash
+   npm install
+   npm install --prefix server
+   ```
 
-## Custom domain (nxgrxvity.com)
+2. **Create local config files** (gitignored — copied from examples only if missing)
 
-This repo includes a root [`CNAME`](CNAME) file so GitHub Pages serves the site at **https://nxgrxvity.com** after DNS and GitHub settings are configured.
+   ```bash
+   npm run setup:local
+   ```
 
-### 1. DNS at your registrar
+   This creates:
 
-Point the **apex** domain to GitHub Pages using **four A records** (name/host `@` or blank, depending on the provider):
+   - `src/config/app-config.local.json` — points `api.baseUrl` at `http://127.0.0.1:8787`
+   - `server/.env` — dev defaults (`MAIL_TRANSPORT=noop`, mail logged to the API terminal; optional `INITIAL_ADMIN_EMAIL=` for admin)
 
-| Type | Name | Data |
-|------|------|------|
-| A | @ | `185.199.108.153` |
-| A | @ | `185.199.109.153` |
-| A | @ | `185.199.110.153` |
-| A | @ | `185.199.111.153` |
+3. **Run site + API together**
 
-Optional **www**: add a **CNAME** record: name `www`, target **`isaak-meier.github.io`** (replace with your GitHub username if different). Then in GitHub you can set redirects between apex and www.
+   ```bash
+   npm run dev:all
+   ```
 
-IPv6 (optional): see [GitHub Pages custom domains](https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/managing-a-custom-domain-for-your-github-pages-site#configuring-an-apex-domain) for current `AAAA` records.
+   - Site: `http://localhost:3000`
+   - API: `http://127.0.0.1:8787` — health check: `http://127.0.0.1:8787/healthz`
+   - Admin UI: `http://127.0.0.1:8787/admin/`
 
-### 2. GitHub repository settings
+4. **What to try**
 
-1. Repo → **Settings** → **Pages** → **Custom domain**: enter **`nxgrxvity.com`** and save (should match `CNAME`).
-2. Wait for DNS check to pass (can take minutes to hours).
-3. Enable **Enforce HTTPS** once it becomes available.
+   - Enter the planet interior → mailing panel → submit an email → API logs a “confirm” email body (noop mode); SQLite under `server/data/mail.db` if `DB_PATH` is set in `.env`.
+   - Open the confirm link from the terminal output (token in URL) to flip subscriber to `confirmed`.
+   - Sign-in pill (top right): request magic link; click link in terminal output → session cookie is set on the API origin (`localhost:8787`). Cross-origin cookie from port 3000 is limited in plain HTTP dev — see `server/DEPLOY.md`.
 
-### 3. Google Cloud (if you use Google Sign-In / Drive API)
-
-Add **Authorized JavaScript origins** and **Authorized redirect URIs** for `https://nxgrxvity.com` (and `https://www.nxgrxvity.com` if you use www).
-
-### Deploy branch
-
-Production deploys from the **`prod`** branch (see `.github/workflows/deploy.yml`). Merge or fast-forward `prod` to match `main` after pushing changes.
+Or run **two terminals**: `npm start` (repo root) and `npm run dev:api`.

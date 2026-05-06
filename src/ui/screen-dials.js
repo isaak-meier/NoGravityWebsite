@@ -1,14 +1,19 @@
 /**
  * @param {HTMLElement} container - usually bottom HUD or `#three-container`
- * @param {{ pyramidField: { config: { shatterSubsystemEnabled: boolean }, triggerManualShatter: () => void }, audioState: object, toggleAudioPlayback: (s: object) => Promise<boolean> }} targets
+ * @param {{ pyramidField: { config: { shatterSubsystemEnabled: boolean }, triggerManualShatter: () => void }, audioState: object, toggleAudioPlayback: (s: object) => Promise<boolean>, solarSystem?: { setGraphLaserManualOverride: (m: 'on'|'off'|null) => void, getGraphLaserManualOverride: () => 'on'|'off'|null } }} targets
  */
-export function mountScreenDials(container, { pyramidField, audioState, toggleAudioPlayback }) {
+export function mountScreenDials(container, { pyramidField, audioState, toggleAudioPlayback, solarSystem }) {
   const root = document.createElement("div");
   root.className = "screen-dials";
   root.setAttribute("aria-label", "Performance controls");
 
   const { row: musicRow, syncMusicToggle } = buildMusicToggle(audioState, toggleAudioPlayback);
   root.appendChild(musicRow);
+
+  if (solarSystem?.setGraphLaserManualOverride && solarSystem?.getGraphLaserManualOverride) {
+    const { row: laserRow } = buildGraphLaserModeRow(solarSystem);
+    root.appendChild(laserRow);
+  }
 
   const { row: shatterTriggerRow, syncShatterSubsystemUi } = buildShatterTriggerRow(pyramidField);
   root.appendChild(shatterTriggerRow);
@@ -88,6 +93,48 @@ function buildMusicToggle(audioState, toggleAudioPlayback) {
 
   const syncMusicToggle = wireMusicToggle(audioState, row, btn, toggleAudioPlayback);
   return { row, syncMusicToggle };
+}
+
+/**
+ * Auto = music-driven lasers; On/Off = user override.
+ * @param {{ setGraphLaserManualOverride: (m: 'on'|'off'|null) => void, getGraphLaserManualOverride: () => 'on'|'off'|null }} solarSystem
+ */
+function buildGraphLaserModeRow(solarSystem) {
+  const row = document.createElement("div");
+  row.className = "screen-dial screen-dial--graph-lasers gui-knob-row";
+
+  const name = document.createElement("div");
+  name.className = "screen-dial__name lil-name";
+  name.textContent = "Lasers";
+
+  const widget = document.createElement("div");
+  widget.className = "screen-dial__widget lil-widget";
+
+  const sel = document.createElement("select");
+  sel.className = "cockpit-pattern-select cockpit-graph-laser-select";
+  sel.setAttribute(
+    "aria-label",
+    "Graph lasers: Auto follows the track; On keeps beams visible; Off hides them",
+  );
+  sel.append(new Option("Auto", "auto"), new Option("On", "on"), new Option("Off", "off"));
+
+  function syncFromSolarSystem() {
+    const m = solarSystem.getGraphLaserManualOverride();
+    sel.value = m === "on" ? "on" : m === "off" ? "off" : "auto";
+  }
+
+  sel.addEventListener("change", () => {
+    const v = sel.value;
+    if (v === "on") solarSystem.setGraphLaserManualOverride("on");
+    else if (v === "off") solarSystem.setGraphLaserManualOverride("off");
+    else solarSystem.setGraphLaserManualOverride(null);
+  });
+
+  widget.appendChild(sel);
+  row.appendChild(name);
+  row.appendChild(widget);
+  syncFromSolarSystem();
+  return { row };
 }
 
 function wireMusicToggle(audioState, row, btn, toggleAudioPlayback) {

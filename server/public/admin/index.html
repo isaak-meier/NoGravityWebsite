@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>nxgrxvity admin</title>
+  <link rel="stylesheet" href="./admin.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>nxgrxvity admin</h1>
+    <div class="topbar__user" id="user-status"></div>
+  </header>
+
+  <main id="app">
+    <section id="login-view" class="view" hidden>
+      <h2>Sign in</h2>
+      <p class="muted">We'll email you a one-time link. Admin-only.</p>
+      <form id="login-form" autocomplete="email">
+        <input type="email" name="email" placeholder="you@example.com" required>
+        <button type="submit">Send link</button>
+      </form>
+      <p id="login-status" class="muted" role="status"></p>
+    </section>
+
+    <section id="dashboard-view" class="view" hidden>
+      <nav class="tabs">
+        <button class="tab" data-tab="subscribers" aria-selected="true">Subscribers</button>
+        <button class="tab" data-tab="campaigns">Campaigns</button>
+      </nav>
+
+      <section id="subscribers-tab" class="tab-panel">
+        <div class="toolbar">
+          <input id="sub-search" type="search" placeholder="Search email">
+          <select id="sub-status">
+            <option value="">All statuses</option>
+            <option value="pending">Pending</option>
+            <option value="confirmed">Confirmed</option>
+            <option value="unsubscribed">Unsubscribed</option>
+          </select>
+          <button id="sub-refresh">Refresh</button>
+          <a id="sub-export" href="#" class="button-link">Export CSV</a>
+        </div>
+        <table id="sub-table">
+          <thead>
+            <tr><th>ID</th><th>Email</th><th>Status</th><th>Created</th><th>Confirmed</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <div class="pager">
+          <button id="sub-prev">Prev</button>
+          <span id="sub-page">page 1</span>
+          <button id="sub-next">Next</button>
+          <span id="sub-total" class="muted"></span>
+        </div>
+      </section>
+
+      <section id="campaigns-tab" class="tab-panel" hidden>
+        <div class="toolbar">
+          <button id="campaign-new">New draft</button>
+          <button id="campaigns-refresh">Refresh</button>
+        </div>
+        <table id="campaigns-table">
+          <thead>
+            <tr><th>ID</th><th>Subject</th><th>Status</th><th>Created</th><th>Sent</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+
+        <section id="campaign-editor" hidden>
+          <h3 id="campaign-editor-title">Edit campaign</h3>
+          <form id="campaign-form">
+            <label>Subject<input type="text" name="subject" required maxlength="200"></label>
+            <label>HTML body<textarea name="html_body" rows="10" placeholder="<p>Hello…</p>"></textarea></label>
+            <label>Text body<textarea name="text_body" rows="6" placeholder="Plain-text fallback"></textarea></label>
+            <div class="row">
+              <button type="submit">Save draft</button>
+              <button type="button" id="campaign-test">Send test to me</button>
+              <button type="button" id="campaign-send" class="danger">Send to all</button>
+              <button type="button" id="campaign-cancel">Close</button>
+            </div>
+            <p id="campaign-status" class="muted" role="status"></p>
+          </form>
+        </section>
+      </section>
+    </section>
+  </main>
+
+  <script type="module" src="./admin.js"></script>
+</body>
+</html>

@@ -42,12 +42,10 @@ Whenever you **edit project files**, explain what you changed in the **same resp
 **Always include:**
 
 - **What & why** in plain language (goal of the diff, not a line-by-line dump).
-- **Clickable `vscode://file/` links** to each touched file at a useful start line (URL-encode spaces). Do not rely on citation-only blocks as the only way to open files.
-- At least one **` ```javascript `** **pseudocode** block for the change: use `// pseudocode` on the first line, **In:/Out:** on any wrapper function, and **per-step `//` English sentences** that describe behavior and list **all inputs and outputs with types** — **no** `methodName(args)` step lines (see **Pseudocode** in `explainer-mode.mdc`). For a trivial one-line tweak, **one** such `//` sentence with full typed In/Out is enough.
+- **Clickable `cursor://file/` links** to each touched file at a useful start line (URL-encode spaces; use `cursor://` so links open in Cursor—`vscode://file/` often misroutes on Windows). Do not rely on citation-only blocks as the only way to open files.
+- **At least one real-code snippet** from the diff in a **language-tagged** fenced block (`` ```javascript ``, `` ```css ``, `` ```html ``, …) — pick the **most relevant** lines that capture the change (the new helper, the touched call site, the edited material — not the whole function if it’s long). Trim with `// ... existing code ...` style ellipses if needed. **Do not** show **pseudocode** in change explanations unless the user **explicitly** asks for it.
 
-**When showing real code** from the repo, use a fenced block with the correct **language id** (`javascript`, `css`, `html`, …).
-
-**Chunked teaching** (journey map, one chunk per turn, progress markers): use when the change is **large**, touches **many concerns**, or the user is learning a system — not mandatory for a small, localized edit (still give pseudocode + links in one turn).
+**Chunked teaching** (journey map, one chunk per turn, progress markers): use when the change is **large**, touches **many concerns**, or the user is learning a system — not mandatory for a small, localized edit (still give links + the relevant real-code snippet in one turn).
 
 ```javascript
 // ❌ BAD: unrelated rename + style sweep across the file while fixing one bug

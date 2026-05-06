@@ -2,5 +2,17 @@
   "googleDrive": {
     "folderId": null,
     "apiKey": null
+  },
+  "mailingList": {
+    "enabled": false,
+    "emailFieldName": "EMAIL"
+  },
+  "songPromotion": {
+    "hypedditUrl": "https://hypeddit.com/link/your-link-here",
+    "title": "New single",
+    "buttonLabel": "Listen on Hypeddit"
+  },
+  "api": {
+    "baseUrl": "http://127.0.0.1:8787"
   }
 }

@@ -1,0 +1,48 @@
+# fly.toml — Fly.io app config for the No Gravity API.
+# Adjust `app` and `primary_region` to match your Fly account before first deploy.
+
+app = "no-gravity-api"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  HOST = "0.0.0.0"
+  PORT = "8787"
+  DB_PATH = "/data/mail.db"
+  MAIL_TRANSPORT = "resend"
+  PUBLIC_BASE_URL = "https://api.nxgrxvity.com"
+  SITE_URL = "https://nxgrxvity.com"
+  CORS_ORIGINS = "https://nxgrxvity.com"
+  # Server also allows https://www.nxgrxvity.com automatically (apex ↔ www) when merging SITE_URL + CORS_ORIGINS.
+  MAIL_FROM = "No Gravity <hello@nxgrxvity.com>"
+  # Set INITIAL_ADMIN_EMAIL via `fly secrets set` (kept out of source for now;
+  # could live here if you don't mind it being public).
+
+# Persistent volume that holds mail.db. Create once with:
+#   fly volumes create data --region iad --size 1
+[[mounts]]
+  source = "data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "get"
+    path = "/healthz"
+    timeout = "5s"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256

@@ -5,6 +5,7 @@ import PyramidField, {
   SHATTER_CYCLE_BARS,
   PATTERN_CYCLE_BARS,
   patternModeForBar,
+  maxVertexDistanceToPoint,
 } from './pyramid-field.js';
 import {
   PATTERN_SPHERE,
@@ -22,6 +23,17 @@ describe('patternModeForBar', () => {
     expect(patternModeForBar(PATTERN_CYCLE_BARS * 2)).toBe(PATTERN_SPHERE);
     expect(patternModeForBar(PATTERN_CYCLE_BARS * 3)).toBe(PATTERN_DRIFT);
     expect(patternModeForBar(PATTERN_CYCLE_BARS * 4)).toBe(PATTERN_RING);
+  });
+});
+
+describe('maxVertexDistanceToPoint', () => {
+  it('measures furthest vertex from a world-space point', () => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
+    m.position.set(4, 0, 0);
+    const origin = new THREE.Vector3(0, 0, 0);
+    const d = maxVertexDistanceToPoint(m, origin);
+    const expected = Math.hypot(4.5, 0.5, 0.5);
+    expect(d).toBeCloseTo(expected, 5);
   });
 });
 
@@ -163,6 +175,22 @@ describe('PyramidField', () => {
       const spy = vi.spyOn(pf._shatter, 'update');
       pf.update(0.016);
       expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('latches shards fully inside the planet as invisible', () => {
+      const pf = new PyramidField({
+        count: 1,
+        shatterSubsystemEnabled: false,
+      });
+      const planet = new THREE.Mesh(new THREE.SphereGeometry(1));
+      const scene = new THREE.Scene();
+      scene.add(planet);
+      planet.add(pf.group);
+      expect(pf._shards[0].hiddenInside).toBe(false);
+      // Breathing places shards at _orbitMin.._orbitMax (well above config.orbitRadius)
+      pf.update(1 / 60, null, { mesh: planet, radius: 10 });
+      expect(pf._shards[0].hiddenInside).toBe(true);
+      expect(pf._shards[0].mesh.visible).toBe(false);
     });
   });
 

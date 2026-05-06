@@ -487,6 +487,7 @@ describe('three-scene helpers', () => {
       handleResize(c, cam, rend, dummyComposer);
       expect(dummyComposer.setSize).toHaveBeenCalledWith(300, 150);
     });
+
   });
 
   // ── animateLoop ───────────────────────────────────────────────────────
