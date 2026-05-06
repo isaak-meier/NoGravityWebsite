@@ -4,15 +4,21 @@ const defaults = {
     apiKey: null,
   },
   /**
-   * Planet interior mailing form (optional). Set in app-config.local.json, e.g. Google Form POST URL + entry id for email.
+   * Planet interior mailing list (field name for the email input only).
    * @type {{ formAction: string | null, emailFieldName: string, mailtoFallback: string | null }}
    */
   mailingList: {
     formAction: null,
-    /** Google Forms: entry.XXXXXXXX; generic forms: field name for email. */
     emailFieldName: "EMAIL",
-    /** Used when formAction is null: opens default mail client. */
     mailtoFallback: null,
+  },
+  /**
+   * Backend API — required for the mailing panel and optional auth UI.
+   * Override in app-config.local.json for local dev (e.g. http://127.0.0.1:8787).
+   * @type {{ baseUrl: string | null }}
+   */
+  api: {
+    baseUrl: "https://api.nxgrxvity.com",
   },
 };
 
@@ -36,9 +42,14 @@ async function buildConfig() {
     raw?.mailingList && typeof raw.mailingList === "object"
       ? { ...defaults.mailingList, ...raw.mailingList }
       : { ...defaults.mailingList };
+  const api =
+    raw?.api && typeof raw.api === "object"
+      ? { ...defaults.api, ...raw.api }
+      : { ...defaults.api };
   return {
     googleDrive: gd,
     mailingList,
+    api,
   };
 }
 

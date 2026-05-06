@@ -4,8 +4,9 @@
     "apiKey": null
   },
   "mailingList": {
-    "formAction": null,
-    "emailFieldName": "entry.000000000",
-    "mailtoFallback": null
+    "emailFieldName": "EMAIL"
+  },
+  "api": {
+    "baseUrl": "http://127.0.0.1:8787"
   }
 }

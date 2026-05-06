@@ -20,7 +20,7 @@ import {
 } from "../google/google-auth.js";
 import GoogleDriveAudioProvider from "../google/google-drive-audio.js";
 import PyramidField from "../pyramid/pyramid-field.js";
-import SolarSystem from "./solar-system.js";
+import SolarSystem, { spectrumToGraphEqBands } from "./solar-system.js";
 import CameraController from "./camera-controller.js";
 import AudioManager from "./audio-manager.js";
 import Comet from "./comet.js";
@@ -31,6 +31,8 @@ import {
 import { attachPlanetInteriorGoop } from "./planet-goop-material.js";
 import { mountScreenDials } from "../ui/screen-dials.js";
 import { createPlanetMailingPanel } from "../ui/planet-mailing-panel.js";
+import { createAuthClient } from "../auth/auth-client.js";
+import { createAuthUI } from "../auth/auth-ui.js";
 
 function logNxgrxvityBuildStamp() {
   if (typeof console === "undefined" || !console.log) return;
@@ -99,7 +101,7 @@ function createCamera(container) {
     45,
     container.clientWidth / container.clientHeight,
     0.1,
-    15000
+    200000
   );
   cam.position.set(0, 80, 300);
   return cam;
@@ -913,6 +915,13 @@ function initScene() {
     }
     const loudness = spectrum.reduce((a, v) => a + v, 0) / spectrum.length;
     solarSystem.setLoudness(loudness);
+    const nBins = spectrum.length;
+    const bassEnd = Math.max(1, Math.floor(nBins * 0.12));
+    let bassSum = 0;
+    for (let i = 0; i < bassEnd; i++) bassSum += spectrum[i];
+    const bass = bassSum / bassEnd;
+    solarSystem.setGraphAudioDrive({ loudness, bass });
+    solarSystem.setGraphEqBands(spectrumToGraphEqBands(spectrum));
 
     applySpectrumToParams(spectrum, {
       planetParams,
@@ -956,6 +965,8 @@ function initScene() {
   const camCtrl = new CameraController(container, camera, { isMobile });
   camCtrl.sun = solarSystem.sun;
   camCtrl.sunLight = solarSystem.sunLight;
+  camCtrl.graphCentroid = solarSystem.getGraphCentroid();
+  camCtrl.graphPickProxies = solarSystem.getClusterPickProxies();
   camCtrl.setupFollowHandler(renderer, solarSystem.planets, { comet });
   // Fly in directly to the blue planet on startup
   camCtrl.followPlanet = solarSystem.planets[0];
@@ -963,6 +974,11 @@ function initScene() {
   if (gui) {
     camCtrl.setupGUI(gui);
     setupTitleGUI(gui);
+    solarSystem.setupGUI(gui, {
+      onChange: () => {
+        camCtrl.graphCentroid = solarSystem.getGraphCentroid();
+      },
+    });
   }
 
   const enterPlanetHud = document.createElement("div");
@@ -973,7 +989,11 @@ function initScene() {
   enterPlanetBtn.textContent = "Enter planet";
   enterPlanetBtn.setAttribute("aria-label", "Enter planet: animated fly-in while the camera stays locked to this planet");
   enterPlanetBtn.addEventListener("click", () => {
-    camCtrl.animateEnterPlanet(primary);
+    if (isCameraInsideAnyPlanet(camera.position, solarSystem.planets)) {
+      camCtrl.animateExitPlanet(primary);
+    } else {
+      camCtrl.animateEnterPlanet(primary);
+    }
   });
   enterPlanetHud.appendChild(enterPlanetBtn);
   container.appendChild(enterPlanetHud);
@@ -1008,8 +1028,23 @@ function initScene() {
   planetGoopOverlay.appendChild(goopShine);
   container.appendChild(planetGoopOverlay);
 
-  const mailingPanel = createPlanetMailingPanel(appConfig);
-  container.appendChild(mailingPanel.root);
+  const planetInteriorHud = document.createElement("div");
+  planetInteriorHud.className = "planet-interior-hud";
+  planetInteriorHud.setAttribute("aria-hidden", "true");
+
+  const mailingPanel = createPlanetMailingPanel(appConfig, {
+    visibilityRoot: planetInteriorHud,
+  });
+
+  if (appConfig.api?.baseUrl) {
+    const authClient = createAuthClient(appConfig.api);
+    const authUi = createAuthUI(authClient, { siteOrigin: window.location.origin });
+    planetInteriorHud.appendChild(authUi.root);
+    void authClient.refresh();
+  }
+
+  planetInteriorHud.appendChild(mailingPanel.root);
+  container.appendChild(planetInteriorHud);
 
   window.addEventListener("resize", () =>
     handleResize(container, camera, renderer, composer)
@@ -1018,10 +1053,16 @@ function initScene() {
   // Animation loop delegates to SolarSystem.update + CameraController.update
   const clock = new THREE.Clock();
   let cometDevInspectOnce = isEnabled("COMET_DEV_INSPECT_ON_LOAD");
+  let enterPlanetHudInside = false;
   (function tick() {
     requestAnimationFrame(tick);
     if (audioState.stream) audioState.stream.pump();
     const t = clock.getDelta();
+    const audioTimeEarly =
+      audioState.audioEl && !audioState._liveStream
+        ? audioState.audioEl.currentTime
+        : null;
+    solarSystem.setGraphLaserEightBarPhase(audioTimeEarly, beatDetector.barDuration);
     solarSystem.update(t);
     // Keep the comet orbiting around whichever planet the camera is watching
     const _cometAnchor = new THREE.Vector3();
@@ -1039,17 +1080,28 @@ function initScene() {
       cometDevInspectOnce = false;
       camCtrl.beginFollowComet(comet);
     }
-    const audioTime =
-      audioState.audioEl && !audioState._liveStream
-        ? audioState.audioEl.currentTime
-        : null;
-    pyramidField.update(t, {
-      bpm: beatDetector.getEffectiveBpm(),
-      barDuration: beatDetector.barDuration,
-      audioCurrentTime: audioTime,
-    });
+    const audioTime = audioTimeEarly;
+    pyramidField.update(
+      t,
+      {
+        bpm: beatDetector.getEffectiveBpm(),
+        barDuration: beatDetector.barDuration,
+        audioCurrentTime: audioTime,
+      },
+      { mesh: sphere, radius: planetParams.radius },
+    );
     camCtrl.update(t);
     const insidePlanet = isCameraInsideAnyPlanet(camera.position, solarSystem.planets);
+    if (insidePlanet !== enterPlanetHudInside) {
+      enterPlanetHudInside = insidePlanet;
+      enterPlanetBtn.textContent = insidePlanet ? "Exit planet" : "Enter planet";
+      enterPlanetBtn.setAttribute(
+        "aria-label",
+        insidePlanet
+          ? "Exit planet: return the camera to where it was when you entered"
+          : "Enter planet: animated fly-in while the camera stays locked to this planet"
+      );
+    }
     planetGoopOverlay.classList.toggle("planet-goop-overlay--visible", insidePlanet);
     mailingPanel.setInsidePlanet(insidePlanet);
     composer.render();

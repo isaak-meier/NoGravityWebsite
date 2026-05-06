@@ -12,7 +12,11 @@ import {
 } from "./fragment-pattern-math.js";
 
 const _up = new THREE.Vector3(0, 1, 0);
+const _scratchVertex = new THREE.Vector3();
+const _planetCenterWorld = new THREE.Vector3();
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+/** Epsilon for "fully inside" sphere test (world units). */
+const INSIDE_PLANET_EPS = 1e-4;
 /** Bars between all-shard waves; one shatter animation lasts this many bars. */
 export const SHATTER_CYCLE_BARS = 8;
 /** Bars per automatic pattern rotation (Rings → Swirl → Field → Drift → …). */
@@ -34,6 +38,22 @@ export function patternModeForBar(barIndex) {
   const n = PATTERN_CYCLE_ORDER.length;
   const i = Math.floor(barIndex / PATTERN_CYCLE_BARS) % n;
   return PATTERN_CYCLE_ORDER[i];
+}
+
+/**
+ * Furthest world-space distance from {@link sphereCenterWorld} to any vertex of {@link mesh}.
+ * @param {THREE.Mesh} mesh
+ * @param {THREE.Vector3} sphereCenterWorld
+ */
+export function maxVertexDistanceToPoint(mesh, sphereCenterWorld) {
+  mesh.updateWorldMatrix(true, false);
+  const pos = mesh.geometry.attributes.position;
+  let maxD = 0;
+  for (let i = 0; i < pos.count; i++) {
+    _scratchVertex.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+    maxD = Math.max(maxD, _scratchVertex.distanceTo(sphereCenterWorld));
+  }
+  return maxD;
 }
 
 export default class PyramidField {
@@ -201,7 +221,11 @@ export default class PyramidField {
     const driftDir = Math.random() > 0.5 ? 1 : -1;
     const driftMult = 0.7 + Math.random() * 0.6;
 
-    this._shards.push({ mesh, dir, sizeMult, driftDir, driftMult });
+    this._shards.push({
+      mesh, dir, sizeMult, driftDir, driftMult,
+      /** Once true, shard stays hidden and is skipped by shatter waves. */
+      hiddenInside: false,
+    });
     this.group.add(mesh);
   }
 
@@ -211,8 +235,9 @@ export default class PyramidField {
    * @param {number} [musicClock.bpm]
    * @param {number} [musicClock.barDuration] — one bar in seconds (from BeatDetector)
    * @param {number | null} [musicClock.audioCurrentTime] — HTMLMediaElement.currentTime when playing a file; null for mic / no transport
+   * @param {{ mesh: import("three").Mesh, radius: number } | null} [planetCtx] — when set, pyramids that lie fully inside this sphere become invisible permanently
    */
-  update(deltaTime, musicClock = null) {
+  update(deltaTime, musicClock = null, planetCtx = null) {
     const prevBpm = this._bpm;
     if (musicClock != null) {
       this._hasMusicClock = true;
@@ -258,6 +283,7 @@ export default class PyramidField {
       this._restoreShardVisibilityAfterShatter();
     }
     this._updateKeyframeTween(deltaTime);
+    this._updateInsidePlanetContainment(planetCtx);
   }
 
   /**
@@ -328,9 +354,28 @@ export default class PyramidField {
   _restoreShardVisibilityAfterShatter() {
     for (let i = 0; i < this._shards.length; i++) {
       const shard = this._shards[i];
-      if (!this._shatter.isShattered(i) && !shard.mesh.visible) {
+      if (!this._shatter.isShattered(i) && !shard.hiddenInside && !shard.mesh.visible) {
         shard.mesh.visible = true;
         shard.mesh.scale.setScalar(shard.sizeMult);
+      }
+    }
+  }
+
+  /**
+   * @param {{ mesh: import("three").Mesh, radius: number } | null} planetCtx
+   */
+  _updateInsidePlanetContainment(planetCtx) {
+    if (!planetCtx?.mesh || !(planetCtx.radius > 0)) return;
+    const R = planetCtx.radius;
+    planetCtx.mesh.getWorldPosition(_planetCenterWorld);
+    for (let i = 0; i < this._shards.length; i++) {
+      const shard = this._shards[i];
+      if (shard.hiddenInside) continue;
+      if (this._shatter?.isShattered(i)) continue;
+      const maxD = maxVertexDistanceToPoint(shard.mesh, _planetCenterWorld);
+      if (maxD <= R + INSIDE_PLANET_EPS) {
+        shard.hiddenInside = true;
+        shard.mesh.visible = false;
       }
     }
   }
@@ -379,11 +424,13 @@ export default class PyramidField {
       },
     });
     for (let i = 0; i < this._shards.length; i++) {
+      if (this._shards[i].hiddenInside) continue;
       this._patternCoordinator.registerShard(i, fragPerShard);
     }
     this._patternCoordinator.finalizeWave();
 
     for (let i = 0; i < this._shards.length; i++) {
+      if (this._shards[i].hiddenInside) continue;
       const m = this._shards[i].mesh;
       this._shatter.syncShardTransform(i, m.position, m.quaternion, m.scale.x, null);
       m.visible = false;
@@ -418,6 +465,7 @@ export default class PyramidField {
     const { size } = this.config;
     const lerp = this._spectrumSmoothing;
     for (let i = 0; i < this._shards.length; i++) {
+      if (this._shards[i].hiddenInside) continue;
       if (this._shatter?.isShattered?.(i)) continue;
       const energy = from[i] + (to[i] - from[i]) * frac;
       applySpectrumToShard(this._shards[i], energy, size, lerp);
@@ -431,6 +479,7 @@ export default class PyramidField {
     const lerp = this._spectrumSmoothing;
     const len = spectrum.length;
     for (let i = 0; i < this._shards.length; i++) {
+      if (this._shards[i].hiddenInside) continue;
       if (this._shatter?.isShattered?.(i)) continue;
       const energy = bandEnergyForShard(i, this._shards.length, spectrum, len);
       applySpectrumToShard(this._shards[i], energy, size, lerp);
