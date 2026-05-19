@@ -15,7 +15,10 @@ export function mountScreenDials(container, { pyramidField, audioState, toggleAu
     root.appendChild(laserRow);
   }
 
-  const { row: shatterTriggerRow, syncShatterSubsystemUi } = buildShatterTriggerRow(pyramidField);
+  const { row: shatterTriggerRow, syncShatterSubsystemUi } = buildShatterTriggerRow(
+    pyramidField,
+    solarSystem
+  );
   root.appendChild(shatterTriggerRow);
 
   syncShatterSubsystemUi();
@@ -38,7 +41,7 @@ function makeCockpitToggle(ariaLabel) {
   return btn;
 }
 
-function buildShatterTriggerRow(pyramidField) {
+function buildShatterTriggerRow(pyramidField, solarSystem) {
   const shatterTriggerRow = document.createElement("div");
   shatterTriggerRow.className = "screen-dial screen-dial--shatter-trigger gui-knob-row";
 
@@ -58,17 +61,65 @@ function buildShatterTriggerRow(pyramidField) {
   shatterTriggerRow.appendChild(shatterName);
   shatterTriggerRow.appendChild(shatterWidget);
 
+  const usePlanetShatter = typeof solarSystem?.triggerRedPlanetShatter === "function";
+
   function syncShatterSubsystemUi() {
-    const enabled = !!pyramidField.config.shatterSubsystemEnabled;
+    const enabled = usePlanetShatter || !!pyramidField.config.shatterSubsystemEnabled;
     shatterTriggerRow.classList.toggle("screen-dial--shatter-sub-off", !enabled);
     triggerBtn.disabled = !enabled;
   }
 
   triggerBtn.addEventListener("click", () => {
-    pyramidField.triggerManualShatter();
+    if (usePlanetShatter) {
+      solarSystem.triggerRedPlanetShatter();
+    } else {
+      pyramidField.triggerManualShatter();
+    }
   });
 
   return { row: shatterTriggerRow, syncShatterSubsystemUi };
+}
+
+/**
+ * @param {{
+ *   audioEl?: HTMLMediaElement | null,
+ *   _liveStream?: unknown,
+ *   _musicLoadPhase?: string,
+ *   _musicLoadOffline?: boolean,
+ *   _musicDriveConfigured?: boolean,
+ *   _musicLoadEmptyFolder?: boolean,
+ * }} audioState
+ * @returns {string | null}
+ */
+export function getMusicStatusMessage(audioState) {
+  if (audioState._liveStream) {
+    return "Live mic — file music unavailable";
+  }
+
+  const phase = audioState._musicLoadPhase || "idle";
+  if (phase === "loading") return "Loading track\u2026";
+  if (phase === "error") {
+    return audioState._musicLoadOffline
+      ? "You're offline — music needs a connection"
+      : "Couldn't load track — try again";
+  }
+
+  if (audioState.audioEl) return null;
+
+  if (audioState._musicLoadEmptyFolder) {
+    return "No audio files in Drive folder";
+  }
+
+  const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+  if (offline) {
+    return "You're offline — music needs a connection";
+  }
+
+  if (audioState._musicDriveConfigured) {
+    return "Select a track below to play music";
+  }
+
+  return "Music unavailable — connect to load a track";
 }
 
 /**
@@ -87,11 +138,21 @@ function buildMusicToggle(audioState, toggleAudioPlayback) {
 
   const btn = makeCockpitToggle("Music playback");
 
-  widget.appendChild(btn);
-  row.appendChild(name);
-  row.appendChild(widget);
+  const status = document.createElement("div");
+  status.className = "screen-dial__music-status";
+  status.setAttribute("role", "status");
+  status.hidden = true;
 
-  const syncMusicToggle = wireMusicToggle(audioState, row, btn, toggleAudioPlayback);
+  const mainRow = document.createElement("div");
+  mainRow.className = "screen-dial__main-row";
+  mainRow.appendChild(name);
+  mainRow.appendChild(widget);
+  widget.appendChild(btn);
+
+  row.appendChild(mainRow);
+  row.appendChild(status);
+
+  const syncMusicToggle = wireMusicToggle(audioState, row, btn, status, toggleAudioPlayback);
   return { row, syncMusicToggle };
 }
 
@@ -137,7 +198,7 @@ function buildGraphLaserModeRow(solarSystem) {
   return { row };
 }
 
-function wireMusicToggle(audioState, row, btn, toggleAudioPlayback) {
+function wireMusicToggle(audioState, row, btn, statusEl, toggleAudioPlayback) {
   let hookedEl = null;
 
   function syncMusicToggle() {
@@ -147,6 +208,18 @@ function wireMusicToggle(audioState, row, btn, toggleAudioPlayback) {
     btn.disabled = !hasTrack;
     row.classList.toggle("screen-dial--music-off", hasTrack && el.paused);
     row.classList.toggle("screen-dial--music-live", live);
+
+    const statusMsg = getMusicStatusMessage(audioState);
+    row.classList.toggle("screen-dial--music-unavailable", !hasTrack && !live);
+    if (statusMsg) {
+      statusEl.hidden = false;
+      statusEl.textContent = statusMsg;
+      btn.setAttribute("aria-describedby", statusEl.id || (statusEl.id = "music-load-status"));
+    } else {
+      statusEl.hidden = true;
+      statusEl.textContent = "";
+      btn.removeAttribute("aria-describedby");
+    }
 
     if (hasTrack) {
       btn.setAttribute("aria-checked", String(!el.paused));

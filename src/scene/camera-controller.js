@@ -788,6 +788,24 @@ class CameraController {
    * Orbit the comet with the same controls as planet follow (drag, wheel zoom, touch).
    * @param {{ getHeadWorldPosition: (v: THREE.Vector3) => THREE.Vector3, getFollowOrbitRadius?: () => number }} comet
    */
+  /**
+   * Dev: follow a planet at normal orbit distance immediately (no intro fly-in from far shell).
+   * @param {{ mesh: import('three').Mesh, def?: { radius?: number } }} planet
+   */
+  lockToPlanetWithoutIntro(planet) {
+    if (!planet?.mesh) return;
+    this.followComet = null;
+    this.followPlanet = planet;
+    this._introOrbitActive = false;
+    this._introOrbitElapsed = 0;
+    this.zoomActive = false;
+    this._followOrbitYaw = 0;
+    this._followOrbitPitch = this._defaultFollowPitch();
+    this._snapCameraToPlanetOrbitDistance(INTRO_ORBIT_TO_DIST);
+    this._syncFollowOrbitScaleFromCameraPosition();
+    this._lastFollowPlanet = planet;
+  }
+
   beginFollowComet(comet) {
     this._enterPlanetTween = null;
     this._enterPlanetInteriorHold = false;

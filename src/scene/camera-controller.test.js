@@ -111,6 +111,23 @@ describe('CameraController', () => {
       expect(ctrl.followComet).toBe(fakeComet);
     });
 
+    it('lockToPlanetWithoutIntro skips intro orbit and snaps to follow distance', () => {
+      const c = makeContainer();
+      const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
+      cam.position.set(0, 5, 25);
+      const ctrl = new CameraController(c, cam);
+      const mesh = new THREE.Mesh();
+      mesh.position.set(100, 0, 0);
+      const planet = { mesh, def: { radius: 0.6 } };
+      ctrl.lockToPlanetWithoutIntro(planet);
+      expect(ctrl.followPlanet).toBe(planet);
+      expect(ctrl._introOrbitActive).toBe(false);
+      expect(ctrl.zoomActive).toBe(false);
+      const center = new THREE.Vector3();
+      mesh.getWorldPosition(center);
+      expect(cam.position.distanceTo(center)).toBeCloseTo(15, 0);
+    });
+
     it('animateEnterPlanet eases camera inside and keeps planet follow', () => {
       const c = makeContainer();
       const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);

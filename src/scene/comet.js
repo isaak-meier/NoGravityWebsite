@@ -1,64 +1,85 @@
 import * as THREE from "three";
 import { COMET_HEAD_BASE_RADIUS, createCometHeadStyleMesh } from "./comet-head-mesh.js";
 
-const TRAIL_LENGTH = 480;
+/** Pre-allocated trail sprites; pool grows if the comet outlives this count. */
+const TRAIL_INITIAL_POOL = 480 * 2;
+
+/** One full arc from ingress to egress in path parameter space (then straight outbound). */
+const ARC_PERIOD = Math.PI * 2;
 
 /**
- * Gentle parabolic path behind the anchor with soft gas-cloud sprites along the path.
+ * Highly eccentric pass around the sun: nucleus, coma glow, and a tail that points
+ * **away from the sun** (not opposite velocity). Brightness follows inverse-square
+ * solar distance (perihelion peak).
  */
 export default class Comet {
   constructor({
-    /** Radians per second along the path parameter (lower = slower crossing). */
-    speed = 0.2,
-    sweep = 16,
-    height = 0.5,
-    arcHeight = 5,
-    /** Depth offset along world −Z from anchor (tail behind head). */
-    depth = 20,
-    bankDepth = 2,
+    /** Path parameter advance (radians/s); lower = slower pass. */
+    speed = 0.5,
+    /** Orbital eccentricity (0.9–0.99 ≈ long-period comet; ≥1 hyperbolic escape). */
+    eccentricity = 0.96,
+    /** Closest approach to sun center (world units). */
+    perihelionDistance = 42,
+    /** Polar angle (rad) at path start — far inbound leg. */
+    thetaIngress = -2.35,
+    /** Polar angle (rad) at end of curved leg — hands off to outbound cruise. */
+    thetaEgress = 2.45,
+    /** World units traveled along outbound asymptote per unit u beyond 1. */
+    outboundUnitsPerArc = 90,
   } = {}) {
     this.speed = speed;
-    this.sweep = sweep;
-    this.height = height;
-    this.arcHeight = arcHeight;
-    this.depth = depth;
-    this.bankDepth = bankDepth;
+    this.eccentricity = eccentricity;
+    this.perihelionDistance = perihelionDistance;
+    this.thetaIngress = thetaIngress;
+    this.thetaEgress = thetaEgress;
+    this.outboundUnitsPerArc = outboundUnitsPerArc;
 
-    /** Path phase: 0 ⇒ u=0 ⇒ x = −sweep (left end of parabola before crossing). */
+    this._semiLatus = perihelionDistance * (1 + eccentricity);
+
+    /** Path phase (radians); monotonic — no looping. */
     this._angle = 0;
+    this._sun = new THREE.Vector3(150, 0, 0);
+    this._posScratch = new THREE.Vector3();
+    this._sunRelScratch = new THREE.Vector3();
+    this._tangentScratch = new THREE.Vector3();
+    this._antiSunScratch = new THREE.Vector3();
+    this._perpScratch = new THREE.Vector3();
+    this._puffScratch = new THREE.Vector3();
+
+    /** Orbital plane: sun → constellation (roughly −X), with a sky arc in +Y. */
+    this._orbitAxisX = new THREE.Vector3(-1, 0, 0);
+    this._orbitAxisY = new THREE.Vector3(0, 0.88, 0.22).normalize();
+
     this._brightness = 0.4;
     this._targetBrightness = 0.4;
-    this._anchor = new THREE.Vector3();
-    this._spectrumResponse = 1.35;
-    /** 0 = trail ignores beat; 1 = full `b` like before. */
+    this._spectrumResponse = 0.35;
+    this._solarFlux = 1;
     this._trailBeatResponsiveness = 0.28;
     this._trailOpacity = 0.52;
+    /** Per-second fade for deposited trail puffs (0 = no fade). */
+    this.trailFadeRate = 0.02;
     this._glowSize = 2.4;
     this._headScale = 0.055;
-    this._color = "#dce8ff";
 
     this.group = new THREE.Group();
-    this._trailPositions = [];
     this._trailSprites = [];
-    /** @type {number[]} fixed random Z rotation per trail sprite (symmetric puffs, varied orientation) */
-    this._trailSpriteRotations = [];
+    /** @type {number[]} seconds since each puff was emitted */
+    this._trailSpriteAges = [];
+    /** @type {number[]} peak opacity locked in at emit time */
+    this._trailSpritePeak = [];
+    this._trailEmitCount = 0;
     this._trailCloudTex = null;
 
-    /** Drawn after trail sprites so the nucleus stays visible at the tip (higher = later). */
     this.headRenderOrder = 1;
-    /**
-     * Over this many indices from the head, trail width blends from **head diameter** to full fan width.
-     * (Not an opacity-only fade — geometry matches the nucleus at the neck.)
-     */
     this.trailTipFadeSamples = 28;
 
     this._trailColorNear = new THREE.Color(0xf8fbff);
     this._trailColorFar = new THREE.Color(0x6eb8ff);
 
-    /** When true, arc angle does not advance (freeze motion for inspection). */
     this.motionPaused = false;
 
     this._initHead();
+    this._initGlow();
     this._initTrail();
   }
 
@@ -78,7 +99,7 @@ export default class Comet {
       map: glowTex,
       color: 0xc8ddff,
       transparent: true,
-      opacity: 0.55,
+      opacity: 0,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     });
@@ -89,116 +110,189 @@ export default class Comet {
 
   _initTrail() {
     this._trailCloudTex = new THREE.CanvasTexture(Comet._createGasCloudTexture());
-    for (let i = 0; i < TRAIL_LENGTH; i++) {
-      const mat = new THREE.SpriteMaterial({
-        map: this._trailCloudTex,
-        color: 0xe8f0ff,
-        transparent: true,
-        opacity: 0,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      });
-      const sprite = new THREE.Sprite(mat);
-      sprite.scale.set(0.2, 0.2, 1);
-      sprite.renderOrder = Math.max(0, this.headRenderOrder - 1);
-      this._trailSpriteRotations.push(Math.random() * Math.PI * 2);
-      this.group.add(sprite);
-      this._trailSprites.push(sprite);
-      this._trailPositions.push(new THREE.Vector3());
+    for (let i = 0; i < TRAIL_INITIAL_POOL; i++) {
+      this._createTrailSprite();
     }
+  }
 
-    const startPos = this._computePosition(this._angle);
-    for (let i = 0; i < TRAIL_LENGTH; i++) {
-      this._trailPositions[i].copy(startPos);
-      this._trailSprites[i].position.copy(startPos);
-    }
+  _createTrailSprite() {
+    const mat = new THREE.SpriteMaterial({
+      map: this._trailCloudTex,
+      color: 0xe8f0ff,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const sprite = new THREE.Sprite(mat);
+    sprite.scale.set(0.2, 0.2, 1);
+    sprite.visible = false;
+    sprite.renderOrder = Math.max(0, this.headRenderOrder - 1);
+    this.group.add(sprite);
+    this._trailSprites.push(sprite);
+    this._trailSpriteAges.push(0);
+    this._trailSpritePeak.push(0);
+    return sprite;
   }
 
   setLoudness(loudness) {
-    this._targetBrightness = 0.32 + loudness * this._spectrumResponse;
+    this._targetBrightness = 0.15 + loudness * this._spectrumResponse;
   }
 
-  setAnchor(worldPos) {
-    this._anchor.copy(worldPos);
+  setSunWorldPosition(worldPos) {
+    this._sun.copy(worldPos);
   }
 
-  /**
-   * @param {THREE.Vector3} target
-   * @returns {THREE.Vector3}
-   */
   getHeadWorldPosition(target) {
     return this._head.getWorldPosition(target);
   }
 
-  /** World-space radius of the head for camera min-orbit distance (matches scaled sphere). */
   getFollowOrbitRadius() {
     return this._headScale;
   }
 
   /**
-   * One parabolic crossing per 2π of `angle`. Path is **world-anchored** only (does not depend on the camera).
-   * u=0 → left end; u=1 → right end (local X); Y = height + parabola; Z = behind anchor.
-   * @param {number} angle
+   * @param {number} theta
+   * @param {THREE.Vector3} target sun-relative position
    */
-  _computePosition(angle) {
-    const period = Math.PI * 2;
-    let a = angle % period;
-    if (a < 0) a += period;
-    const u = a / period;
-    const horiz = (u - 0.5) * 2 * this.sweep;
-    const parabola = this.arcHeight * 4 * u * (1 - u);
-    const vert = this.height + parabola;
-    const depthLegacy = -this.depth + this.bankDepth * Math.sin(Math.PI * u);
-    return new THREE.Vector3(
-      this._anchor.x + horiz,
-      this._anchor.y + vert,
-      this._anchor.z + depthLegacy
+  _positionOnArc(theta, target) {
+    const e = this.eccentricity;
+    const cosT = Math.cos(theta);
+    const denom = 1 + e * cosT;
+    const r = denom > 1e-4 ? this._semiLatus / denom : this._semiLatus * 4;
+    const sinT = Math.sin(theta);
+    const x = this._orbitAxisX;
+    const y = this._orbitAxisY;
+    return target.set(
+      (x.x * cosT + y.x * sinT) * r,
+      (x.y * cosT + y.y * sinT) * r,
+      (x.z * cosT + y.z * sinT) * r
     );
   }
 
-  _shiftTrail(pos) {
-    for (let i = TRAIL_LENGTH - 1; i > 0; i--) {
-      this._trailPositions[i].copy(this._trailPositions[i - 1]);
-    }
-    this._trailPositions[0].copy(pos);
+  /**
+   * ∂position/∂θ on the curved leg (for outbound asymptote).
+   * @param {number} theta
+   * @param {THREE.Vector3} target
+   */
+  _arcTangent(theta, target) {
+    const e = this.eccentricity;
+    const cosT = Math.cos(theta);
+    const sinT = Math.sin(theta);
+    const denom = 1 + e * cosT;
+    const r = denom > 1e-4 ? this._semiLatus / denom : this._semiLatus * 4;
+    const drDtheta = (this._semiLatus * e * sinT) / (denom * denom);
+    const x = this._orbitAxisX;
+    const y = this._orbitAxisY;
+    const px = x.x * cosT + y.x * sinT;
+    const py = x.y * cosT + y.y * sinT;
+    const pz = x.z * cosT + y.z * sinT;
+    const dpx = -x.x * sinT + y.x * cosT;
+    const dpy = -x.y * sinT + y.y * cosT;
+    const dpz = -x.z * sinT + y.z * cosT;
+    return target.set(dpx * r + px * drDtheta, dpy * r + py * drDtheta, dpz * r + pz * drDtheta);
   }
 
-  _applyTrailVisuals(b) {
+  /**
+   * Sun-centered path: one eccentric arc (perihelion mid-pass), then straight escape.
+   * @param {number} angle
+   * @param {THREE.Vector3} [target]
+   */
+  _computePosition(angle, target = this._posScratch) {
+    const u = Math.max(0, angle / ARC_PERIOD);
+    const rel = this._sunRelScratch;
+
+    if (u <= 1) {
+      const thetaRange = this.thetaEgress - this.thetaIngress;
+      const theta = this.thetaIngress + u * thetaRange;
+      this._positionOnArc(theta, rel);
+    } else {
+      const thetaEnd = this.thetaEgress;
+      this._positionOnArc(thetaEnd, rel);
+      this._arcTangent(thetaEnd, this._tangentScratch);
+      const cruise = (u - 1) * this.outboundUnitsPerArc;
+      rel.addScaledVector(this._tangentScratch.normalize(), cruise);
+    }
+
+    return target.set(rel.x + this._sun.x, rel.y + this._sun.y, rel.z + this._sun.z);
+  }
+
+  /** Anti-sun unit vector (tail points this way). */
+  _antiSunFrom(headWorld, target = this._antiSunScratch) {
+    return target.subVectors(headWorld, this._sun).normalize();
+  }
+
+  _updateSolarFlux(headWorld) {
+    const dist = Math.max(headWorld.distanceTo(this._sun), this.perihelionDistance * 0.35);
+    const ratio = this.perihelionDistance / dist;
+    this._solarFlux = THREE.MathUtils.clamp(ratio * ratio, 0.12, 6);
+  }
+
+  static _perpendicularUnit(axis, out) {
+    const ax = Math.abs(axis.x);
+    const ay = Math.abs(axis.y);
+    const az = Math.abs(axis.z);
+    if (ax < ay && ax < az) out.set(1, 0, 0);
+    else if (ay < az) out.set(0, 1, 0);
+    else out.set(0, 0, 1);
+    out.crossVectors(axis, out).normalize();
+    return out;
+  }
+
+  _emitTrailPuff(headWorld, antiSun, b) {
+    const i = this._trailEmitCount;
+    if (i >= this._trailSprites.length) {
+      this._createTrailSprite();
+    }
+    this._trailEmitCount = i + 1;
+
     const k = THREE.MathUtils.clamp(this._trailBeatResponsiveness, 0, 1);
     const bTrail = 1 + (b - 1) * k;
-    const pos = this._trailPositions;
     const neckBlendEnd = Math.max(1, this.trailTipFadeSamples);
     const tailFanBoost = 1.38;
-    /** Matches icosa head diameter in world units (`createCometHeadStyleMesh` world radius = `_headScale`). */
     const headDiameter = 2 * this._headScale;
+    const tail = Math.min(1, i / Math.max(1, neckBlendEnd * 4));
 
-    for (let i = 0; i < TRAIL_LENGTH; i++) {
+    const uNeck = THREE.MathUtils.clamp(i / neckBlendEnd, 0, 1);
+    const neckBlend = uNeck * uNeck * (3 - 2 * uNeck);
+
+    const puffBase =
+      (0.1 + (1 - tail) * 0.32 + tail * 0.58 * tailFanBoost) * (0.92 + bTrail * 0.12);
+    const alongLen = puffBase * (1.1 + tail * 0.85);
+    const acrossW = puffBase * (0.55 + tail * 0.48);
+    const sx = THREE.MathUtils.lerp(headDiameter, acrossW, neckBlend);
+    const sy = THREE.MathUtils.lerp(headDiameter, alongLen, neckBlend);
+
+    Comet._perpendicularUnit(antiSun, this._perpScratch);
+    const lateral = (Math.random() - 0.5) * acrossW * 0.35;
+    const behind = (0.02 + Math.random() * 0.06) * (0.4 + tail);
+    this._puffScratch
+      .copy(headWorld)
+      .addScaledVector(antiSun, behind)
+      .addScaledVector(this._perpScratch, lateral);
+
+    const sprite = this._trailSprites[i];
+    sprite.position.copy(this._puffScratch);
+    sprite.scale.set(sx, sy, 1);
+    sprite.material.rotation = Math.atan2(antiSun.y, antiSun.x) + (Math.random() - 0.5) * 0.4;
+    sprite.material.color.copy(this._trailColorNear).lerp(this._trailColorFar, tail);
+    const peak = bTrail * this._trailOpacity * this._solarFlux;
+    this._trailSpriteAges[i] = 0;
+    this._trailSpritePeak[i] = peak;
+    sprite.material.opacity = peak;
+    sprite.renderOrder = Math.max(0, this.headRenderOrder - 1);
+    sprite.visible = true;
+  }
+
+  _fadeTrailSprites(dt) {
+    const rate = Math.max(0, this.trailFadeRate);
+    for (let i = 0; i < this._trailEmitCount; i++) {
+      this._trailSpriteAges[i] += dt;
+      const fade = rate <= 0 ? 1 : Math.exp(-rate * this._trailSpriteAges[i]);
+      const opacity = this._trailSpritePeak[i] * fade;
       const sprite = this._trailSprites[i];
-      sprite.position.copy(pos[i]);
-      sprite.renderOrder = Math.max(0, this.headRenderOrder - 1);
-
-      const t = 1 - i / (TRAIL_LENGTH - 1);
-      const fadeLinear = t;
-      const tail = 1 - fadeLinear;
-
-      const uNeck = THREE.MathUtils.clamp(i / neckBlendEnd, 0, 1);
-      const neckBlend = uNeck * uNeck * (3 - 2 * uNeck);
-
-      const puffBase =
-        (0.1 + fadeLinear * 0.32 + tail * 0.58 * tailFanBoost) *
-        (0.92 + bTrail * 0.12);
-      const spreadW = 1 + tail * 0.52;
-      const spreadH = 1 + tail * 0.22;
-      const fanW = puffBase * spreadW;
-      const fanH = puffBase * spreadH;
-      const sx = THREE.MathUtils.lerp(headDiameter, fanW, neckBlend);
-      const sy = THREE.MathUtils.lerp(headDiameter, fanH, neckBlend);
-      sprite.scale.set(sx, sy, 1);
-      sprite.material.rotation = this._trailSpriteRotations[i];
-
-      sprite.material.color.copy(this._trailColorNear).lerp(this._trailColorFar, tail);
-
-      sprite.material.opacity = fadeLinear * bTrail * this._trailOpacity;
+      sprite.material.opacity = opacity;
+      sprite.visible = opacity > 0.008;
     }
   }
 
@@ -208,22 +302,27 @@ export default class Comet {
     }
 
     this._brightness += (this._targetBrightness - this._brightness) * 0.1;
-    const b = Math.min(Math.max(this._brightness, 0.42), 2.0);
-
+    const audioBoost = Math.min(Math.max(this._brightness, 0), 1.2);
     const pos = this._computePosition(this._angle);
     this._head.position.copy(pos);
-    this._head.renderOrder = this.headRenderOrder;
+    this._updateSolarFlux(pos);
 
+    const b = THREE.MathUtils.clamp(0.42 + this._solarFlux * 0.22 + audioBoost * 0.12, 0.42, 2.2);
+
+    this._head.renderOrder = this.headRenderOrder;
     this._head.scale.setScalar(this._headScale / COMET_HEAD_BASE_RADIUS);
-    this._headMat.opacity = Math.min(0.5 + b * 0.35, 0.95);
+    this._headMat.opacity = Math.min(0.45 + this._solarFlux * 0.12 + b * 0.2, 0.95);
+
     if (this._glowMat) {
-      this._glowMat.opacity = Math.min(b * 0.48, 0.82);
-      this._glow.scale.setScalar(this._glowSize * (0.65 + b * 0.35));
+      const coma = Math.min(this._solarFlux * 0.14 + b * 0.1, 0.82);
+      this._glowMat.opacity = coma;
+      this._glow.scale.setScalar(this._glowSize * (0.5 + this._solarFlux * 0.12 + b * 0.2));
     }
 
     if (this._trailSprites.length) {
-      this._shiftTrail(pos);
-      this._applyTrailVisuals(b);
+      const antiSun = this._antiSunFrom(pos);
+      this._emitTrailPuff(pos, antiSun, b);
+      this._fadeTrailSprites(dt);
     }
   }
 
@@ -231,6 +330,9 @@ export default class Comet {
     const f = gui.addFolder("Comet");
     f.add(this, "headRenderOrder", 0, 4, 1).name("Head draw order");
     f.add(this, "trailTipFadeSamples", 4, 120, 1).name("Neck width blend (samples)");
+    f.add(this, "speed", 0.02, 0.5, 0.01).name("Speed");
+    f.add(this, "trailFadeRate", 0, 2.5, 0.02).name("Trail fade rate");
+    f.add(this, "perihelionDistance", 20, 80, 1).name("Perihelion dist");
     f.open();
     return f;
   }
@@ -261,9 +363,6 @@ export default class Comet {
     return canvas;
   }
 
-  /**
-   * Soft overlapping gas blobs (no head-style glow core — trail stays softer).
-   */
   static _createGasCloudTexture(size = 128) {
     const canvas = document.createElement("canvas");
     canvas.width = size;

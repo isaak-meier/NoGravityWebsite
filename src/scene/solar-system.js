@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { attachPlanetInteriorGoop } from "./planet-goop-material.js";
 import { createGraphLaserLineMaterial } from "./graph-laser-line-material.js";
+import { PlanetHalvesEffect, RED_PLANET_INDEX } from "./planet-shatter.js";
 
 /** World-space radius of the sun mesh (visual anchor at +X; larger reads stronger in bloom). */
 const SUN_WORLD_RADIUS = 12;
@@ -921,10 +922,21 @@ class SolarSystem {
     this._graphLaserHotChunkIndices = null;
     /** `null` = follow music analysis; `'on'` / `'off'` = user override (see {@link #setGraphLaserManualOverride}). */
     this._graphLaserManualOverride = null;
+    this._redPlanetHalves = new PlanetHalvesEffect(this.planets[RED_PLANET_INDEX]);
   }
 
   get primary() {
     return this.planets[0];
+  }
+
+  /** Red planet — dev default follow target when {@link DEV_START_ON_RED_PLANET} is on. */
+  get redPlanet() {
+    return this.planets[RED_PLANET_INDEX];
+  }
+
+  /** Split the red planet in half; halves bounce apart and reunite. */
+  triggerRedPlanetShatter() {
+    this._redPlanetHalves?.trigger();
   }
 
   /**
@@ -1024,6 +1036,7 @@ class SolarSystem {
   }
 
   update(dt) {
+    this._redPlanetHalves?.update(dt);
     for (const p of this.planets) {
       // p.pivot.rotation.y += dt * p.def.speed; // Orbit disabled
       p.mesh.rotation.y += dt * 0.2;

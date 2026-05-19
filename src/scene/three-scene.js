@@ -597,7 +597,17 @@ function animateLoop(scene, camera, composer, planets, starField, state, worlds)
 // --- Audio state management ------------------------------------------------
 
 function createAudioState() {
-  return { stream: null, fft: null, audioEl: null, _liveStream: null };
+  return {
+    stream: null,
+    fft: null,
+    audioEl: null,
+    _liveStream: null,
+    /** @type {'idle' | 'loading' | 'error' | 'ready'} */
+    _musicLoadPhase: "idle",
+    _musicLoadOffline: false,
+    _musicDriveConfigured: false,
+    _musicLoadEmptyFolder: false,
+  };
 }
 
 function stopAudio(audioState) {
@@ -738,17 +748,24 @@ function createSongPickerDOM(isMobile) {
 
 // --- Google Drive song picker ---------------------------------------------
 
-function setupSongPicker(parentEl, audioState, onSpectrum, onNewSource, isMobile, beatDetector) {
+function setupSongPicker(parentEl, audioState, onSpectrum, onNewSource, isMobile, beatDetector, notifyMusicUi) {
   initializeGoogleAuth();
   const dom = createSongPickerDOM(isMobile);
   parentEl.appendChild(dom.wrapper);
   const driveState = { provider: null };
   let activeLiveMode = null; // "mic" | "desktop" | null
 
+  function setMusicLoadPhase(phase, { offline = false } = {}) {
+    audioState._musicLoadPhase = phase;
+    audioState._musicLoadOffline = offline;
+    notifyMusicUi?.();
+  }
+
   function deactivateLive() {
     stopLiveAudio(audioState);
     dom.micBtn.style.cssText = dom.btnStyle;
     activeLiveMode = null;
+    notifyMusicUi?.();
   }
 
   async function toggleLive() {
@@ -765,40 +782,67 @@ function setupSongPicker(parentEl, audioState, onSpectrum, onNewSource, isMobile
     } catch (err) {
       console.warn("Live audio (mic) failed:", err);
     }
+    notifyMusicUi?.();
   }
 
   dom.micBtn.addEventListener("click", () => toggleLive());
 
   async function loadDriveFile(fileId) {
     if (!fileId || !driveState.provider) return;
+    setMusicLoadPhase("loading");
     deactivateLive();
-    const blob = await driveState.provider.fetchFileBlob(fileId);
-    await loadAudioSource(blob, audioState, onSpectrum, onNewSource, beatDetector);
     try {
-      // Resume AudioContext (browsers suspend it until user gesture)
-      if (audioState.fft && audioState.fft.context && audioState.fft.context.state === "suspended") {
-        await audioState.fft.context.resume();
+      const blob = await driveState.provider.fetchFileBlob(fileId);
+      await loadAudioSource(blob, audioState, onSpectrum, onNewSource, beatDetector);
+      setMusicLoadPhase("ready");
+      try {
+        // Resume AudioContext (browsers suspend it until user gesture)
+        if (audioState.fft && audioState.fft.context && audioState.fft.context.state === "suspended") {
+          await audioState.fft.context.resume();
+        }
+        await audioState.audioEl.play();
+        if (audioState.stream) audioState.stream.start();
+      } catch (err) {
+        console.warn("Auto-play failed:", err);
       }
-      await audioState.audioEl.play();
-      if (audioState.stream) audioState.stream.start();
-    } catch (err) { console.warn("Auto-play failed:", err); }
+    } catch (err) {
+      console.error("Error loading audio:", err);
+      setMusicLoadPhase("error", {
+        offline: typeof navigator !== "undefined" && !navigator.onLine,
+      });
+    }
   }
 
   dom.driveFilesList.addEventListener("change", async (e) => {
     if (!e.target.value || !driveState.provider) return;
-    try { await loadDriveFile(e.target.value); } catch (err) { console.error("Error loading audio:", err); }
+    await loadDriveFile(e.target.value);
   });
 
   async function connectDrive(provider, autoSelectFirst) {
-    driveState.provider = provider;
-    const files = await provider.listAllFiles();
-    if (files.length === 0) return;
-    dom.driveFilesList.innerHTML = '<option value="">Select an audio file...</option>';
-    files.forEach((f) => dom.driveFilesList.appendChild(new Option(f.name, f.id)));
-    dom.driveFilesList.style.display = "inline-block";
-    if (autoSelectFirst) {
-      dom.driveFilesList.value = files[0].id;
-      await loadDriveFile(files[0].id);
+    setMusicLoadPhase("loading");
+    try {
+      driveState.provider = provider;
+      const files = await provider.listAllFiles();
+      if (files.length === 0) {
+        audioState._musicLoadEmptyFolder = true;
+        setMusicLoadPhase("idle");
+        return;
+      }
+      audioState._musicLoadEmptyFolder = false;
+      dom.driveFilesList.innerHTML = '<option value="">Select an audio file...</option>';
+      files.forEach((f) => dom.driveFilesList.appendChild(new Option(f.name, f.id)));
+      dom.driveFilesList.style.display = "inline-block";
+      if (autoSelectFirst) {
+        dom.driveFilesList.value = files[0].id;
+        await loadDriveFile(files[0].id);
+      } else {
+        setMusicLoadPhase("idle");
+      }
+    } catch (err) {
+      console.error("Configured Google Drive folder failed:", err);
+      setMusicLoadPhase("error", {
+        offline: typeof navigator !== "undefined" && !navigator.onLine,
+      });
     }
   }
 
@@ -807,10 +851,10 @@ function setupSongPicker(parentEl, audioState, onSpectrum, onNewSource, isMobile
   const presetApiKey = appConfig.googleDrive.apiKey ||
     (typeof window !== "undefined" ? window.__GOOGLE_API_KEY__ : null);
   if (presetFolderId) {
+    audioState._musicDriveConfigured = true;
+    notifyMusicUi?.();
     const provider = new GoogleDriveAudioProvider({ folderId: presetFolderId, apiKey: presetApiKey || null });
-    connectDrive(provider, isEnabled("AUTOPLAY_FIRST_DRIVE_TRACK_ON_LOAD")).catch((err) => {
-      console.error("Configured Google Drive folder failed:", err);
-    });
+    void connectDrive(provider, isEnabled("AUTOPLAY_FIRST_DRIVE_TRACK_ON_LOAD"));
   }
   return dom.wrapper;
 }
@@ -819,6 +863,7 @@ function setupSongPicker(parentEl, audioState, onSpectrum, onNewSource, isMobile
 
 const _planetCenterScratch = new THREE.Vector3();
 const _planetScaleScratch = new THREE.Vector3();
+const _sunWorldScratch = new THREE.Vector3();
 
 /**
  * @param {{ mesh: import("three").Mesh, def: { radius: number } }} planet
@@ -977,6 +1022,7 @@ function initScene() {
     }
     const loudness = spectrum.reduce((a, v) => a + v, 0) / spectrum.length;
     solarSystem.setLoudness(loudness);
+    comet.setLoudness(loudness);
     const nBins = spectrum.length;
     const bassEnd = Math.max(1, Math.floor(nBins * 0.12));
     let bassSum = 0;
@@ -1034,7 +1080,7 @@ function initScene() {
     solarSystem,
   });
   syncMusicUi = cockpit.syncMusicToggle;
-  setupSongPicker(bottomHud, audioState, onSpectrum, onNewAudioSource, isMobile, beatDetector);
+  setupSongPicker(bottomHud, audioState, onSpectrum, onNewAudioSource, isMobile, beatDetector, syncMusicUi);
   if (gui) {
     bottomHud.appendChild(gui.domElement);
   }
@@ -1046,9 +1092,14 @@ function initScene() {
   camCtrl.graphCentroid = solarSystem.getGraphCentroid();
   camCtrl.graphPickProxies = solarSystem.getClusterPickProxies();
   camCtrl.setupFollowHandler(renderer, solarSystem.planets, { comet });
-  // Fly in directly to the blue planet on startup
-  camCtrl.followPlanet = solarSystem.planets[0];
-  camCtrl.zoomActive = false;
+  if (isEnabled("DEV_START_ON_RED_PLANET")) {
+    const redPlanet = solarSystem.planets[1];
+    camCtrl._fallbackFollowPlanet = redPlanet;
+    camCtrl.lockToPlanetWithoutIntro(redPlanet);
+  } else {
+    camCtrl.followPlanet = solarSystem.planets[0];
+    camCtrl.zoomActive = false;
+  }
   if (gui) {
     camCtrl.setupGUI(gui);
     setupTitleGUI(gui);
@@ -1158,9 +1209,8 @@ function initScene() {
     const _hudTargetWorld = new THREE.Vector3();
     (camCtrl.followPlanet ? camCtrl.followPlanet.mesh : sphere).getWorldPosition(_hudTargetWorld);
     cameraDistanceValueEl.textContent = camera.position.distanceTo(_hudTargetWorld).toFixed(1);
-    const _cometAnchor = new THREE.Vector3();
-    sphere.getWorldPosition(_cometAnchor);
-    comet.setAnchor(_cometAnchor);
+    solarSystem.sun.getWorldPosition(_sunWorldScratch);
+    comet.setSunWorldPosition(_sunWorldScratch);
     /** Tab backgrounding can make one rAF report multi-second `t`; one `update(t)` shifts the trail once while the head jumps → gap. Sub-step so each shift matches motion. */
     const maxCometStep = 1 / 60;
     const cometSubsteps = Math.min(200, Math.max(1, Math.ceil(t / maxCometStep)));
