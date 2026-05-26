@@ -687,6 +687,19 @@ describe('SolarSystem', () => {
     });
   });
 
+  describe('tryTriggerRedPlanetOnBeat', () => {
+    it('triggers once per beat onset, not on sustained isBeat frames', () => {
+      const ss = new SolarSystem(false);
+      const triggerSpy = vi.spyOn(ss._redPlanetHalves, 'trigger');
+      ss.tryTriggerRedPlanetOnBeat(true);
+      ss.tryTriggerRedPlanetOnBeat(true);
+      expect(triggerSpy).toHaveBeenCalledTimes(1);
+      ss.tryTriggerRedPlanetOnBeat(false);
+      ss.tryTriggerRedPlanetOnBeat(true);
+      expect(triggerSpy).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('spectrumToGraphEqBands', () => {
     it(`returns ${GRAPH_EQ_BAR_COUNT} contiguous band averages`, () => {
       const n = 1024;

@@ -2,6 +2,38 @@ import * as THREE from "three";
 import { attachPlanetInteriorGoop } from "./planet-goop-material.js";
 import { createGraphLaserLineMaterial } from "./graph-laser-line-material.js";
 import { PlanetHalvesEffect, RED_PLANET_INDEX } from "./planet-shatter.js";
+import {
+  PLANET_GROWTH_PALETTE,
+  PLANET_GROWTH_PALETTE_SIZE,
+} from "../ui/green-planet-fade-handles.js";
+
+const PLANET_GROWTH_VERTEX_COMMON_INSERT = `#include <common>
+varying vec3 vGreenWorldNormal;`;
+
+const PLANET_GROWTH_VERTEX_NORMAL_INSERT = `#include <beginnormal_vertex>
+vGreenWorldNormal = normalize(mat3(modelMatrix) * objectNormal);`;
+
+const PLANET_GROWTH_FRAG_COMMON_INSERT = `#include <common>
+const int PLANET_GROWTH_PALETTE_SIZE = ${PLANET_GROWTH_PALETTE_SIZE};
+uniform vec3 uColors[PLANET_GROWTH_PALETTE_SIZE];
+uniform vec3 uAxes[PLANET_GROWTH_PALETTE_SIZE];
+uniform float uSoftness;
+varying vec3 vGreenWorldNormal;`;
+
+const PLANET_GROWTH_FRAG_COLOR_INSERT = `#include <color_fragment>
+vec3 pgNormal = normalize(vGreenWorldNormal);
+vec3 pgColorSum = vec3(0.0);
+float pgWeightSum = 0.0;
+for (int pgi = 0; pgi < PLANET_GROWTH_PALETTE_SIZE; pgi++) {
+  vec3 pgAxis = uAxes[pgi];
+  float pgAxisLen = length(pgAxis);
+  if (pgAxisLen < 1e-4) continue;
+  float pgAlign = clamp(dot(pgNormal, pgAxis / pgAxisLen) * 0.5 + 0.5, 0.0, 1.0);
+  float pgW = pow(pgAlign, uSoftness);
+  pgColorSum += uColors[pgi] * pgW;
+  pgWeightSum += pgW;
+}
+if (pgWeightSum > 1e-4) diffuseColor.rgb = pgColorSum / pgWeightSum;`;
 
 /** World-space radius of the sun mesh (visual anchor at +X; larger reads stronger in bloom). */
 const SUN_WORLD_RADIUS = 12;
@@ -899,6 +931,7 @@ class SolarSystem {
     this.sun = this._createSun();
     this.sunLight = null;
     this.planets = PLANET_DEFS.map((def) => this._createPlanet(def));
+    this._attachGreenPlanetFade(this.planets[2]);
     this.starField = this._createStars();
     this.planetClusters = this.planets.map((p) => this._createPlanetCluster(p));
     this._clusterPickProxies = this.planets.map((p) => this._createClusterPickProxy(p));
@@ -923,6 +956,8 @@ class SolarSystem {
     /** `null` = follow music analysis; `'on'` / `'off'` = user override (see {@link #setGraphLaserManualOverride}). */
     this._graphLaserManualOverride = null;
     this._redPlanetHalves = new PlanetHalvesEffect(this.planets[RED_PLANET_INDEX]);
+    /** Re-opens after a non-beat frame so each onset triggers at most one bounce. */
+    this._redPlanetBeatGateOpen = true;
   }
 
   get primary() {
@@ -937,6 +972,20 @@ class SolarSystem {
   /** Split the red planet in half; halves bounce apart and reunite. */
   triggerRedPlanetShatter() {
     this._redPlanetHalves?.trigger();
+  }
+
+  /**
+   * Beat-reactive bounce: one split animation per detected onset (not every frame `isBeat` stays true).
+   * @param {boolean} isBeat
+   */
+  tryTriggerRedPlanetOnBeat(isBeat) {
+    if (!isBeat) {
+      this._redPlanetBeatGateOpen = true;
+      return;
+    }
+    if (!this._redPlanetBeatGateOpen) return;
+    this._redPlanetBeatGateOpen = false;
+    this.triggerRedPlanetShatter();
   }
 
   /**
@@ -1007,6 +1056,59 @@ class SolarSystem {
       if (typeof onChange === "function") onChange(v);
     });
     folder.open();
+    this._setupGreenPlanetGUI(gui);
+  }
+
+  /**
+   * Live editing controls for the green planet (PLANET_DEFS index 2). The Planet Growth folder
+   * exposes one color picker per palette entry plus a softness slider that controls how sharp
+   * each color's territory is on the planet surface.
+   * @param {{ addFolder: Function }} gui
+   */
+  _setupGreenPlanetGUI(gui) {
+    const green = this.planets[2];
+    if (!green?.fade?.uniforms?.uColors) return;
+    const folder = gui.addFolder("Planet Growth");
+    PLANET_GROWTH_PALETTE.forEach((entry, i) => {
+      folder.addColor(green.fade.uniforms.uColors.value, i).name(entry.name);
+    });
+    folder.add(green.fade.uniforms.uSoftness, "value", 0.5, 8, 0.1).name("Softness");
+    folder.open();
+  }
+
+  /**
+   * Patches the green planet's MeshPhysicalMaterial so its diffuse color is a soft blend across
+   * {@link PLANET_GROWTH_PALETTE}. Each palette entry has a world-space axis (driven by
+   * {@link createGreenPlanetFadeHandles}); the blend weight at each fragment is the remapped
+   * dot product of the surface normal with that axis, raised to `uSoftness`.
+   * @param {{ material: import("three").Material }} planet
+   */
+  _attachGreenPlanetFade(planet) {
+    const colors = PLANET_GROWTH_PALETTE.map((entry) => new THREE.Color(entry.hex));
+    const axes = [];
+    for (let i = 0; i < PLANET_GROWTH_PALETTE.length; i++) {
+      const a = (i / PLANET_GROWTH_PALETTE.length) * Math.PI * 2 - Math.PI / 2;
+      axes.push(new THREE.Vector3(Math.cos(a), -Math.sin(a), 0));
+    }
+    planet.fade = {
+      uniforms: {
+        uColors: { value: colors },
+        uAxes: { value: axes },
+        uSoftness: { value: 2.5 },
+      },
+    };
+    planet.material.onBeforeCompile = (shader) => {
+      shader.uniforms.uColors = planet.fade.uniforms.uColors;
+      shader.uniforms.uAxes = planet.fade.uniforms.uAxes;
+      shader.uniforms.uSoftness = planet.fade.uniforms.uSoftness;
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", PLANET_GROWTH_VERTEX_COMMON_INSERT)
+        .replace("#include <beginnormal_vertex>", PLANET_GROWTH_VERTEX_NORMAL_INSERT);
+      shader.fragmentShader = shader.fragmentShader
+        .replace("#include <common>", PLANET_GROWTH_FRAG_COMMON_INSERT)
+        .replace("#include <color_fragment>", PLANET_GROWTH_FRAG_COLOR_INSERT);
+    };
+    planet.material.needsUpdate = true;
   }
 
   /**
@@ -1036,7 +1138,6 @@ class SolarSystem {
   }
 
   update(dt) {
-    this._redPlanetHalves?.update(dt);
     for (const p of this.planets) {
       // p.pivot.rotation.y += dt * p.def.speed; // Orbit disabled
       p.mesh.rotation.y += dt * 0.2;
@@ -1051,6 +1152,8 @@ class SolarSystem {
 
     this._graphPulse += (this._graphPulseTarget - this._graphPulse) * 0.14;
     this._graphBassSm += (this._graphBassTarget - this._graphBassSm) * 0.2;
+    this._redPlanetHalves?.setLoudnessDrive(this._graphPulse);
+    this._redPlanetHalves?.update(dt);
     const eqA = 0.19;
     for (let i = 0; i < GRAPH_EQ_BAR_COUNT; i++) {
       this._graphEqSm[i] += (this._graphEqTarget[i] - this._graphEqSm[i]) * eqA;

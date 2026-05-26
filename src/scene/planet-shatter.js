@@ -15,6 +15,24 @@ export const PLANET_SHATTER_HOLD_END = 0.55;
 const PLANE_EPS = 1e-5;
 const CAP_DEDUPE_EPS = 1e-4;
 
+/** Normalized loudness → separation: floor at min, full span at 1. */
+export const PLANET_SHATTER_LOUDNESS_MIN = 0.08;
+/** Seconds to ramp separation after a beat while loudness is driving. */
+export const PLANET_SHATTER_ATTACK_SEC = 0.22;
+/** Reunite when smoothed loudness stays below this. */
+export const PLANET_SHATTER_REUNITE_THRESHOLD = 0.06;
+/** Quiet time before reuniting in music-driven mode. */
+export const PLANET_SHATTER_REUNITE_QUIET_SEC = 0.45;
+
+/**
+ * @param {number} loudnessSm — smoothed 0..1 loudness drive
+ * @returns {number} separation factor in [LOUDNESS_MIN, 1]
+ */
+export function planetHalfSeparationFactorFromLoudness(loudnessSm) {
+  const u = Math.min(1, Math.max(0, loudnessSm));
+  return PLANET_SHATTER_LOUDNESS_MIN + u * (1 - PLANET_SHATTER_LOUDNESS_MIN);
+}
+
 /**
  * @param {number} t — normalized time in [0, 1]
  * @returns {number} separation factor 0 → 1 (peak) → 0
@@ -271,7 +289,17 @@ export class PlanetHalvesEffect {
     this._halves = null;
     this.active = false;
     this._elapsed = 0;
+    this._quietElapsed = 0;
     this._maxSep = planet.def.radius * PLANET_SHATTER_SEPARATION_SCALE;
+    this._loudnessTarget = 0;
+    this._loudnessSm = 0;
+    /** Stays true after music drives a split until halves reunite. */
+    this._musicSplitMode = false;
+  }
+
+  /** @param {number} loudness01 — smoothed 0..1 music loudness drive */
+  setLoudnessDrive(loudness01) {
+    this._loudnessTarget = Math.min(1, Math.max(0, loudness01));
   }
 
   trigger() {
@@ -281,28 +309,67 @@ export class PlanetHalvesEffect {
     }
     this.active = true;
     this._elapsed = 0;
+    this._quietElapsed = 0;
     this.planet.mesh.visible = false;
     this.group.visible = true;
   }
 
   update(dt) {
+    const step = Math.max(0, dt || 0);
+    this._loudnessSm += (this._loudnessTarget - this._loudnessSm) * 0.18;
     if (!this.active || !this._halves) return;
+
     this._syncGroupToPlanet();
-    this._elapsed += dt;
-    const t = Math.min(1, this._elapsed / PLANET_SHATTER_DURATION_SEC);
-    const factor = planetShatterSeparationFactor(t);
-    const sep = this._maxSep * factor;
+    this._elapsed += step;
+
+    if (
+      this._loudnessTarget > PLANET_SHATTER_REUNITE_THRESHOLD ||
+      this._loudnessSm > PLANET_SHATTER_REUNITE_THRESHOLD
+    ) {
+      this._musicSplitMode = true;
+    }
+
+    let sepFactor;
+    if (this._musicSplitMode) {
+      sepFactor =
+        planetHalfSeparationFactorFromLoudness(this._loudnessSm) *
+        Math.min(1, this._elapsed / PLANET_SHATTER_ATTACK_SEC);
+      if (
+        this._loudnessSm < PLANET_SHATTER_REUNITE_THRESHOLD &&
+        this._loudnessTarget < PLANET_SHATTER_REUNITE_THRESHOLD
+      ) {
+        this._quietElapsed += step;
+        if (this._quietElapsed >= PLANET_SHATTER_REUNITE_QUIET_SEC) {
+          this._finish();
+          return;
+        }
+      } else {
+        this._quietElapsed = 0;
+      }
+    } else {
+      const t = Math.min(1, this._elapsed / PLANET_SHATTER_DURATION_SEC);
+      sepFactor = planetShatterSeparationFactor(t);
+      if (t >= 1) {
+        this._finish();
+        return;
+      }
+    }
+
+    this._applySeparation(sepFactor);
+  }
+
+  /** @param {number} sepFactor — 0..1+ separation multiplier */
+  _applySeparation(sepFactor) {
+    if (!this._halves) return;
+    const sep = this._maxSep * sepFactor;
     const [upper, lower] = this._halves;
     upper.position.set(0, sep * 0.5, 0);
     lower.position.set(0, -sep * 0.5, 0);
-    const wobble = factor * 0.22;
+    const wobble = sepFactor * 0.22;
     upper.rotation.x = wobble * 0.35;
     lower.rotation.x = -wobble * 0.35;
     upper.rotation.z = wobble * 0.18;
     lower.rotation.z = -wobble * 0.18;
-    if (t >= 1) {
-      this._finish();
-    }
   }
 
   dispose() {
@@ -333,6 +400,8 @@ export class PlanetHalvesEffect {
   _finish() {
     this.active = false;
     this._elapsed = 0;
+    this._quietElapsed = 0;
+    this._musicSplitMode = false;
     this.group.visible = false;
     if (this._halves) {
       for (const half of this._halves) {

@@ -530,6 +530,23 @@ describe('CameraController', () => {
       expect(ctrl.followPlanet).toBeNull();
     });
 
+    it('switchToGalaxyView then lockToPlanetWithoutIntro leaves graph mode and follows the pick', () => {
+      const c = makeContainer();
+      const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 30000);
+      const ctrl = new CameraController(c, cam);
+      const blue = { mesh: new THREE.Mesh(), def: { radius: 0.9 } };
+      const red = { mesh: new THREE.Mesh(), def: { radius: 0.6 } };
+      red.mesh.position.set(100, 0, 0);
+      ctrl.followPlanet = blue;
+      ctrl.switchToGalaxyView();
+      expect(ctrl.getViewMode()).toBe('galaxy');
+      ctrl.lockToPlanetWithoutIntro(red);
+      expect(ctrl._graphMode).toBe(false);
+      expect(ctrl.getViewMode()).toBe('planet');
+      expect(ctrl.followPlanet).toBe(red);
+      expect(ctrl._lastFollowedPlanetForGraph).toBeNull();
+    });
+
     it('_updateGraphView orbits the planet we zoomed out from at _graphOrbitDistance', () => {
       const c = makeContainer();
       const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 30000);
@@ -650,6 +667,7 @@ describe('CameraController', () => {
       // Pitch beyond the old clamp ceiling (π - 0.12 ≈ 3.02): aim past the bottom pole at 1.25π
       // (camera should land on the "back-bottom" diagonal — y < 0, z < 0).
       ctrl._graphOrbitPitch = Math.PI * 1.25;
+      ctrl._syncOrbitDirFromAngles(true);
       for (let i = 0; i < 400; i++) ctrl.update(0.05);
       // Position on the great circle: y = r*cos(1.25π) ≈ -0.707r, z = r*sin(1.25π)*cos(0) ≈ -0.707r.
       expect(cam.position.y).toBeLessThan(-1000);

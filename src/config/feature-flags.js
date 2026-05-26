@@ -16,6 +16,8 @@ const FLAGS = {
   DEV_START_ON_RED_PLANET: true,
   /** First Google Drive track loads and plays on load when a folder is configured. */
   AUTOPLAY_FIRST_DRIVE_TRACK_ON_LOAD: true,
+  /** Dev: treat the app as offline (music toast, Drive load errors). Toggle in GUI → Dev. */
+  MOCK_OFFLINE: false,
 };
 
 /**

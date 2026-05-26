@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as THREE from "three";
 import {
   PlanetHalvesEffect,
+  planetHalfSeparationFactorFromLoudness,
   planetShatterSeparationFactor,
   createSphereHalvesGeometries,
   splitSphereGeometryAtEquator,
@@ -11,7 +12,15 @@ import {
   PLANET_HALF_SHELL_GROUP,
   PLANET_SHATTER_BURST_END,
   PLANET_SHATTER_HOLD_END,
+  PLANET_SHATTER_REUNITE_QUIET_SEC,
 } from "./planet-shatter.js";
+
+describe("planetHalfSeparationFactorFromLoudness", () => {
+  it("maps 0 to the minimum separation floor and 1 to full span", () => {
+    expect(planetHalfSeparationFactorFromLoudness(0)).toBeLessThan(0.15);
+    expect(planetHalfSeparationFactorFromLoudness(1)).toBe(1);
+  });
+});
 
 describe("planetShatterSeparationFactor", () => {
   it("starts at 0 and returns to 0 at t=1", () => {
@@ -157,6 +166,36 @@ describe("PlanetHalvesEffect", () => {
     effect.trigger();
     expect(effect.active).toBe(true);
     expect(effect._elapsed).toBe(0);
+    effect.dispose();
+  });
+
+  it("scales half separation with loudness while music-driven", () => {
+    const planet = { mesh, pivot, def: { radius: 0.6 } };
+    const effect = new PlanetHalvesEffect(planet);
+    effect.trigger();
+    effect.setLoudnessDrive(0.2);
+    for (let i = 0; i < 20; i++) effect.update(0.016);
+    const lowSep = effect._halves[0].position.y;
+
+    effect.setLoudnessDrive(1);
+    for (let i = 0; i < 30; i++) effect.update(0.016);
+    const highSep = effect._halves[0].position.y;
+
+    expect(highSep).toBeGreaterThan(lowSep);
+    effect.dispose();
+  });
+
+  it("reunites after loudness drops in music-driven mode", () => {
+    const planet = { mesh, pivot, def: { radius: 0.6 } };
+    const effect = new PlanetHalvesEffect(planet);
+    effect.trigger();
+    effect.setLoudnessDrive(0.8);
+    for (let i = 0; i < 20; i++) effect.update(0.016);
+    effect.setLoudnessDrive(0);
+    const steps = Math.ceil(PLANET_SHATTER_REUNITE_QUIET_SEC / 0.016) + 30;
+    for (let i = 0; i < steps; i++) effect.update(0.016);
+    expect(effect.active).toBe(false);
+    expect(mesh.visible).toBe(true);
     effect.dispose();
   });
 });

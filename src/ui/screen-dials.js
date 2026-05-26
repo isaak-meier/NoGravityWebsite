@@ -1,3 +1,6 @@
+import { showCockpitToast } from "./cockpit-toast.js";
+import { isOffline } from "../util/is-offline.js";
+
 /**
  * @param {HTMLElement} container - usually bottom HUD or `#three-container`
  * @param {{ pyramidField: { config: { shatterSubsystemEnabled: boolean }, triggerManualShatter: () => void }, audioState: object, toggleAudioPlayback: (s: object) => Promise<boolean>, solarSystem?: { setGraphLaserManualOverride: (m: 'on'|'off'|null) => void, getGraphLaserManualOverride: () => 'on'|'off'|null } }} targets
@@ -7,7 +10,10 @@ export function mountScreenDials(container, { pyramidField, audioState, toggleAu
   root.className = "screen-dials";
   root.setAttribute("aria-label", "Performance controls");
 
-  const { row: musicRow, syncMusicToggle } = buildMusicToggle(audioState, toggleAudioPlayback);
+  const { row: musicRow, syncMusicToggle, syncMicToggle, micBtn } = buildAudioInputRow(
+    audioState,
+    toggleAudioPlayback,
+  );
   root.appendChild(musicRow);
 
   if (solarSystem?.setGraphLaserManualOverride && solarSystem?.getGraphLaserManualOverride) {
@@ -23,7 +29,7 @@ export function mountScreenDials(container, { pyramidField, audioState, toggleAu
 
   syncShatterSubsystemUi();
   container.appendChild(root);
-  return { domElement: root, syncMusicToggle };
+  return { domElement: root, syncMusicToggle, syncMicToggle, micBtn };
 }
 
 function makeCockpitToggle(ariaLabel) {
@@ -81,6 +87,8 @@ function buildShatterTriggerRow(pyramidField, solarSystem) {
 }
 
 /**
+ * Toast copy when music is unavailable (offline, server unreachable, or load failed).
+ * Returns null when playback is possible or the user should pick a track instead.
  * @param {{
  *   audioEl?: HTMLMediaElement | null,
  *   _liveStream?: unknown,
@@ -91,13 +99,13 @@ function buildShatterTriggerRow(pyramidField, solarSystem) {
  * }} audioState
  * @returns {string | null}
  */
-export function getMusicStatusMessage(audioState) {
+export function getMusicUnavailableToastMessage(audioState) {
   if (audioState._liveStream) {
     return "Live mic — file music unavailable";
   }
 
   const phase = audioState._musicLoadPhase || "idle";
-  if (phase === "loading") return "Loading track\u2026";
+  if (phase === "loading") return null;
   if (phase === "error") {
     return audioState._musicLoadOffline
       ? "You're offline — music needs a connection"
@@ -110,50 +118,61 @@ export function getMusicStatusMessage(audioState) {
     return "No audio files in Drive folder";
   }
 
-  const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+  const offline = isOffline();
   if (offline) {
     return "You're offline — music needs a connection";
   }
 
   if (audioState._musicDriveConfigured) {
-    return "Select a track below to play music";
+    return null;
   }
 
   return "Music unavailable — connect to load a track";
 }
 
 /**
- * File-based music on/off (same panel chrome as dials). Disabled when no track or when live input is active.
+ * Music + mic switches in one cockpit panel (mic wired from three-scene.js).
  */
-function buildMusicToggle(audioState, toggleAudioPlayback) {
+function buildAudioInputRow(audioState, toggleAudioPlayback) {
   const row = document.createElement("div");
   row.className = "screen-dial screen-dial--music gui-knob-row";
 
-  const name = document.createElement("div");
-  name.className = "screen-dial__name lil-name";
-  name.textContent = "Music";
-
-  const widget = document.createElement("div");
-  widget.className = "screen-dial__widget lil-widget";
-
-  const btn = makeCockpitToggle("Music playback");
-
-  const status = document.createElement("div");
-  status.className = "screen-dial__music-status";
-  status.setAttribute("role", "status");
-  status.hidden = true;
-
   const mainRow = document.createElement("div");
-  mainRow.className = "screen-dial__main-row";
-  mainRow.appendChild(name);
-  mainRow.appendChild(widget);
-  widget.appendChild(btn);
+  mainRow.className = "screen-dial__main-row screen-dial__main-row--audio";
 
+  const musicControl = document.createElement("div");
+  musicControl.className = "screen-dial__control screen-dial__control--music";
+  const musicName = document.createElement("div");
+  musicName.className = "screen-dial__name lil-name";
+  musicName.textContent = "Music";
+  const musicBtn = makeCockpitToggle("Music playback");
+  musicControl.appendChild(musicName);
+  musicControl.appendChild(musicBtn);
+
+  const micControl = document.createElement("div");
+  micControl.className = "screen-dial__control screen-dial__control--mic";
+  const micName = document.createElement("div");
+  micName.className = "screen-dial__name lil-name";
+  micName.textContent = "Mic";
+  const micBtn = makeCockpitToggle("Microphone input");
+  micBtn.title = "Use microphone as live audio input";
+  micControl.appendChild(micName);
+  micControl.appendChild(micBtn);
+
+  mainRow.appendChild(musicControl);
+  mainRow.appendChild(micControl);
   row.appendChild(mainRow);
-  row.appendChild(status);
 
-  const syncMusicToggle = wireMusicToggle(audioState, row, btn, status, toggleAudioPlayback);
-  return { row, syncMusicToggle };
+  const syncMusicToggle = wireMusicToggle(audioState, row, musicBtn, toggleAudioPlayback);
+
+  function syncMicToggle() {
+    const live = !!audioState._liveStream;
+    micBtn.setAttribute("aria-checked", String(live));
+    micControl.classList.toggle("screen-dial__control--mic-on", live);
+  }
+
+  syncMicToggle();
+  return { row, syncMusicToggle, syncMicToggle, micBtn };
 }
 
 /**
@@ -198,28 +217,16 @@ function buildGraphLaserModeRow(solarSystem) {
   return { row };
 }
 
-function wireMusicToggle(audioState, row, btn, statusEl, toggleAudioPlayback) {
+function wireMusicToggle(audioState, row, btn, toggleAudioPlayback) {
   let hookedEl = null;
 
   function syncMusicToggle() {
     const el = audioState.audioEl;
     const live = !!audioState._liveStream;
     const hasTrack = !!el && !live;
-    btn.disabled = !hasTrack;
+    const loading = (audioState._musicLoadPhase || "idle") === "loading";
+    btn.disabled = loading;
     row.classList.toggle("screen-dial--music-off", hasTrack && el.paused);
-    row.classList.toggle("screen-dial--music-live", live);
-
-    const statusMsg = getMusicStatusMessage(audioState);
-    row.classList.toggle("screen-dial--music-unavailable", !hasTrack && !live);
-    if (statusMsg) {
-      statusEl.hidden = false;
-      statusEl.textContent = statusMsg;
-      btn.setAttribute("aria-describedby", statusEl.id || (statusEl.id = "music-load-status"));
-    } else {
-      statusEl.hidden = true;
-      statusEl.textContent = "";
-      btn.removeAttribute("aria-describedby");
-    }
 
     if (hasTrack) {
       btn.setAttribute("aria-checked", String(!el.paused));
@@ -241,13 +248,22 @@ function wireMusicToggle(audioState, row, btn, statusEl, toggleAudioPlayback) {
   }
 
   btn.addEventListener("click", async () => {
-    if (!audioState.audioEl || audioState._liveStream) return;
-    try {
-      await toggleAudioPlayback(audioState);
-    } catch (err) {
-      console.warn("Music toggle failed:", err);
+    if (audioState._liveStream) {
+      const msg = getMusicUnavailableToastMessage(audioState);
+      if (msg) showCockpitToast(msg, { assertive: true });
+      return;
     }
-    syncMusicToggle();
+    if (audioState.audioEl) {
+      try {
+        await toggleAudioPlayback(audioState);
+      } catch (err) {
+        console.warn("Music toggle failed:", err);
+      }
+      syncMusicToggle();
+      return;
+    }
+    const msg = getMusicUnavailableToastMessage(audioState);
+    if (msg) showCockpitToast(msg, { assertive: true });
   });
 
   syncMusicToggle();

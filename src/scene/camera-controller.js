@@ -56,12 +56,6 @@ const GRAPH_ORBIT_ZOOM_SENSITIVITY = 0.00115;
 /** Seconds for click-to-zoom-in tween from graph view back to a planet's follow shell. */
 const GRAPH_ZOOM_TWEEN_DURATION_SEC = 1.6;
 
-/**
- * Camera local +Y projected onto world +Y above this ⇒ no roll stabilization (pure orbit quaternion).
- * Below {@link ORBIT_ROLL_BLEND_TO_CAM_UP_Y}, blend fully toward a world-up `lookAt` from eye→pivot.
- */
-const ORBIT_ROLL_BLEND_FROM_CAM_UP_Y = 0.42;
-const ORBIT_ROLL_BLEND_TO_CAM_UP_Y = -0.22;
 /** If |look-axis·worldY| exceeds this, skip upright look-at (near singularity over / under the pivot). */
 const ORBIT_ROLL_LOOKAT_SKIP_AXIS_Y = 0.986;
 
@@ -79,7 +73,6 @@ const _exitSnapshotCamQ = new THREE.Quaternion();
 const _eulerTmp = new THREE.Euler();
 const _quatSwipeDelta = new THREE.Quaternion();
 const _quatScreen = new THREE.Quaternion();
-const _qUprightLookScratch = new THREE.Quaternion();
 const _qRollStabilizedScratch = new THREE.Quaternion();
 const _fwdAxisScratch = new THREE.Vector3();
 const _camUpAxisScratch = new THREE.Vector3();
@@ -116,6 +109,7 @@ function isUiTouchTarget(el) {
     el.closest &&
     (el.closest(".bottom-left-hud") ||
       el.closest(".enter-planet-hud") ||
+      el.closest(".planet-switcher-hud") ||
       el.closest(".planet-interior-hud") ||
       el.closest(".screen-dials") ||
       el.closest(".lil-gui"))
@@ -181,6 +175,9 @@ class CameraController {
     this._followOrbitYaw = 0;
     /** Polar angle from +Y axis (radians); 0 = above, π/2 ≈ equator, π = below. */
     this._followOrbitPitch = Math.atan2(12, 5);
+    /** Unit pivot→camera direction; source of truth for drag orbit (avoids pole fold-back). */
+    this._followOrbitDir = new THREE.Vector3();
+    this._directionFromSphericalOrbit(0, this._followOrbitPitch, this._followOrbitDir);
     /** Scales orbit offset from planet when wheel-zooming in locked mode. */
     this._followDistanceScale = 1;
     /** First planet-follow only: animate orbit radius from {@link INTRO_ORBIT_FROM_DIST} to {@link INTRO_ORBIT_TO_DIST}. */
@@ -211,6 +208,8 @@ class CameraController {
     this._graphMode = false;
     this._graphOrbitYaw = 0;
     this._graphOrbitPitch = Math.PI / 2;
+    /** Unit pivot→camera direction in graph view. */
+    this._graphOrbitDir = new THREE.Vector3(0, 0, 1);
     this._graphOrbitDistance = GRAPH_ORBIT_DEFAULT_DISTANCE;
     /** Centroid of all planet positions (world space). Set by the host scene via assignment. */
     this.graphCentroid = new THREE.Vector3(0, 0, 0);
@@ -528,9 +527,13 @@ class CameraController {
    * @param {boolean} graph
    */
   _setOrbitYawPitchFromUnitDirection(u, graph) {
-    const phi = Math.acos(THREE.MathUtils.clamp(u.y, -1, 1));
-    const sinP = Math.sin(phi);
-    const theta = Math.abs(sinP) > 1e-6 ? Math.atan2(u.x, u.z) : graph ? this._graphOrbitYaw : this._followOrbitYaw;
+    const prevPhi = graph ? this._graphOrbitPitch : this._followOrbitPitch;
+    const prevTheta = graph ? this._graphOrbitYaw : this._followOrbitYaw;
+    const basePhi = Math.acos(THREE.MathUtils.clamp(u.y, -1, 1));
+    const phi = prevPhi > Math.PI ? Math.PI * 2 - basePhi : basePhi;
+    let theta = Math.atan2(u.x, u.z);
+    while (theta - prevTheta > Math.PI) theta -= Math.PI * 2;
+    while (theta - prevTheta < -Math.PI) theta += Math.PI * 2;
     if (graph) {
       this._graphOrbitPitch = phi;
       this._graphOrbitYaw = theta;
@@ -538,6 +541,22 @@ class CameraController {
       this._followOrbitPitch = phi;
       this._followOrbitYaw = theta;
     }
+  }
+
+  /**
+   * @param {import("three").Vector3} u
+   * @param {boolean} graph
+   */
+  _syncOrbitAnglesFromDir(u, graph) {
+    this._setOrbitYawPitchFromUnitDirection(u, graph);
+  }
+
+  /** @param {boolean} graph */
+  _syncOrbitDirFromAngles(graph) {
+    const theta = graph ? this._graphOrbitYaw : this._followOrbitYaw;
+    const phi = graph ? this._graphOrbitPitch : this._followOrbitPitch;
+    const dir = graph ? this._graphOrbitDir : this._followOrbitDir;
+    this._directionFromSphericalOrbit(theta, phi, dir);
   }
 
   /**
@@ -585,15 +604,13 @@ class CameraController {
     const vert = (dy / h) * Math.PI * 2 * turnFraction;
 
     this._fillOrbitPivotForDrag(_orbitPivotForDrag);
-    const theta = graph ? this._graphOrbitYaw : this._followOrbitYaw;
-    const phi = graph ? this._graphOrbitPitch : this._followOrbitPitch;
-    this._directionFromSphericalOrbit(theta, phi, _uDirDrag);
+    const dir = graph ? this._graphOrbitDir : this._followOrbitDir;
 
-    this._orbitScreenTangentBasis(this.camera, _uDirDrag, _tRDrag, _tUDrag);
-    _uDirDrag.applyAxisAngle(_tRDrag, -vert);
-    _uDirDrag.applyAxisAngle(_tUDrag, -horiz);
-    _uDirDrag.normalize();
-    this._setOrbitYawPitchFromUnitDirection(_uDirDrag, graph);
+    this._orbitScreenTangentBasis(this.camera, dir, _tRDrag, _tUDrag);
+    dir.applyAxisAngle(_tRDrag, -vert);
+    dir.applyAxisAngle(_tUDrag, -horiz);
+    dir.normalize();
+    this._syncOrbitAnglesFromDir(dir, graph);
   }
 
   /**
@@ -789,11 +806,22 @@ class CameraController {
    * @param {{ getHeadWorldPosition: (v: THREE.Vector3) => THREE.Vector3, getFollowOrbitRadius?: () => number }} comet
    */
   /**
+   * Drop graph view without restoring a remembered follow target (explicit UI / switcher picks).
+   */
+  _leaveGraphModeForExplicitSwitch() {
+    this._graphMode = false;
+    this._lastFollowedPlanetForGraph = null;
+  }
+
+  /**
    * Dev: follow a planet at normal orbit distance immediately (no intro fly-in from far shell).
    * @param {{ mesh: import('three').Mesh, def?: { radius?: number } }} planet
    */
   lockToPlanetWithoutIntro(planet) {
     if (!planet?.mesh) return;
+    this._leaveGraphModeForExplicitSwitch();
+    this._enterPlanetTween = null;
+    this._enterPlanetInteriorHold = false;
     this.followComet = null;
     this.followPlanet = planet;
     this._introOrbitActive = false;
@@ -801,21 +829,25 @@ class CameraController {
     this.zoomActive = false;
     this._followOrbitYaw = 0;
     this._followOrbitPitch = this._defaultFollowPitch();
+    this._syncOrbitDirFromAngles(false);
     this._snapCameraToPlanetOrbitDistance(INTRO_ORBIT_TO_DIST);
     this._syncFollowOrbitScaleFromCameraPosition();
     this._lastFollowPlanet = planet;
   }
 
   beginFollowComet(comet) {
+    this._leaveGraphModeForExplicitSwitch();
     this._enterPlanetTween = null;
     this._enterPlanetInteriorHold = false;
     this._planetInteriorExitSnapshot = null;
     this._introOrbitActive = false;
+    this.followPlanet = null;
     this.followComet = comet;
     this.zoomActive = false;
     this._followOrbitYaw = 0;
     this._followDistanceScale = 1;
     this._followOrbitPitch = this._defaultFollowPitch();
+    this._syncOrbitDirFromAngles(false);
     this.mouseX = 0;
     this.mouseY = 0;
   }
@@ -892,6 +924,7 @@ class CameraController {
     const theta = Math.abs(sinP) > 1e-6 ? Math.atan2(_exitSnapshotOffset.x, _exitSnapshotOffset.z) : 0;
     this._followOrbitPitch = phi;
     this._followOrbitYaw = theta;
+    this._directionFromSphericalOrbit(theta, phi, this._followOrbitDir);
   }
 
   /**
@@ -958,8 +991,8 @@ class CameraController {
    * Convention matches the spherical-coordinate position formula used in {@link _updateFollow} and
    * {@link _updateGraphView}: `pitch = π/2`, `yaw = 0` is the canonical "front equator" view (camera
    * at +Z looking -Z). `pitch = 0` is straight above; `pitch = π` is straight below. Values outside
-   * [0, π] continue the great-circle smoothly. {@link _applyOrbitRollStabilization} then eases roll
-   * toward a world-up `lookAt` when the free quaternion would put the sky upside-down on screen.
+   * [0, π] continue the great-circle smoothly. {@link _applyOrbitRollStabilization} applies a
+   * world-up lookAt from eye→pivot when not near the vertical singularity.
    * Result is written into {@link _qOrbitScratch} and returned.
    * @param {number} yaw - radians around world +Y
    * @param {number} pitch - polar angle from world +Y in radians
@@ -973,33 +1006,35 @@ class CameraController {
   }
 
   /**
-   * Blend the free-orbit quaternion toward the same forward (eye→pivot) but with roll aligned to
-   * world +Y via {@link THREE.PerspectiveCamera.prototype.lookAt}, so swinging under the target does
-   * not leave the horizon permanently inverted. Skipped near the vertical look-at singularity.
+   * World-up look-at from eye→pivot so orbit drag never accumulates roll. Near the vertical
+   * look-at singularity, keep the free-orbit quaternion instead.
    * @param {import("three").Vector3} eye
    * @param {import("three").Vector3} pivot
    * @param {import("three").Quaternion} qFree
    * @param {import("three").Quaternion} out
    */
-  _applyOrbitRollStabilization(eye, pivot, qFree, out) {
-    _fwdAxisScratch.set(0, 0, -1).applyQuaternion(qFree);
-    if (Math.abs(_fwdAxisScratch.y) > ORBIT_ROLL_LOOKAT_SKIP_AXIS_Y) {
-      out.copy(qFree);
+  _applyOrbitRollStabilization(eye, pivot, qFallback, out) {
+    _fwdAxisScratch.subVectors(pivot, eye);
+    const len = _fwdAxisScratch.length();
+    if (len < 1e-8) {
+      out.copy(qFallback);
       return;
     }
+    _fwdAxisScratch.divideScalar(len);
     _orbitLookCam.position.copy(eye);
-    _orbitLookCam.up.copy(_worldUp);
+    if (Math.abs(_fwdAxisScratch.y) > ORBIT_ROLL_LOOKAT_SKIP_AXIS_Y) {
+      _camUpAxisScratch.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+      _camUpAxisScratch.addScaledVector(_fwdAxisScratch, -_camUpAxisScratch.dot(_fwdAxisScratch));
+      if (_camUpAxisScratch.lengthSq() < 1e-8) {
+        _orbitLookCam.up.copy(_worldUp);
+      } else {
+        _orbitLookCam.up.copy(_camUpAxisScratch.normalize());
+      }
+    } else {
+      _orbitLookCam.up.copy(_worldUp);
+    }
     _orbitLookCam.lookAt(pivot);
-    _qUprightLookScratch.copy(_orbitLookCam.quaternion);
-
-    _camUpAxisScratch.set(0, 1, 0).applyQuaternion(qFree);
-    const denom = ORBIT_ROLL_BLEND_FROM_CAM_UP_Y - ORBIT_ROLL_BLEND_TO_CAM_UP_Y;
-    let lev = (ORBIT_ROLL_BLEND_FROM_CAM_UP_Y - _camUpAxisScratch.y) / denom;
-    lev = THREE.MathUtils.clamp(lev, 0, 1);
-
-    out.copy(qFree);
-    if (lev <= 1e-5) return;
-    out.slerp(_qUprightLookScratch, lev);
+    out.copy(_orbitLookCam.quaternion);
   }
 
   /**
@@ -1011,11 +1046,13 @@ class CameraController {
     if (this._graphMode) {
       this._graphOrbitYaw = 0;
       this._graphOrbitPitch = Math.PI / 2;
+      this._syncOrbitDirFromAngles(true);
       return;
     }
     if (this.followPlanet || this.followComet) {
       this._followOrbitYaw = 0;
       this._followOrbitPitch = this._defaultFollowPitch();
+      this._syncOrbitDirFromAngles(false);
     }
   }
 
@@ -1031,14 +1068,36 @@ class CameraController {
   }
 
   /**
+   * Jump to constellation (galaxy) view — orbit the planet centroid from a wide shell.
+   */
+  switchToGalaxyView() {
+    this._enterGraphMode({ centerOnCentroid: true });
+    this._graphOrbitDistance = GRAPH_ORBIT_DEFAULT_DISTANCE;
+    this._graphOrbitYaw = 0;
+    this._graphOrbitPitch = Math.PI / 2;
+    this._syncOrbitDirFromAngles(true);
+  }
+
+  /**
+   * @returns {'galaxy' | 'comet' | 'planet' | 'none'}
+   */
+  getViewMode() {
+    if (this._graphMode) return "galaxy";
+    if (this.followComet) return "comet";
+    if (this.followPlanet) return "planet";
+    return "none";
+  }
+
+  /**
    * Flip into the planet-graph view: clear follow target but remember which planet we zoomed out from
    * (so the graph orbit stays centered on it). Initial yaw/pitch are seeded from the camera's current
    * direction relative to that planet so the transition is visually continuous.
+   * @param {{ centerOnCentroid?: boolean }} [opts]
    */
-  _enterGraphMode() {
+  _enterGraphMode(opts = {}) {
     if (this._graphMode) return;
     this._graphMode = true;
-    this._lastFollowedPlanetForGraph = this.followPlanet;
+    this._lastFollowedPlanetForGraph = opts.centerOnCentroid ? null : this.followPlanet;
     const orbitCenter = this._getGraphOrbitCenter();
     this.followPlanet = null;
     this.followComet = null;
@@ -1055,12 +1114,11 @@ class CameraController {
     if (offset.lengthSq() < 1e-6) {
       this._graphOrbitYaw = 0;
       this._graphOrbitPitch = Math.PI / 2;
+      this._graphOrbitDir.set(0, 0, 1);
       return;
     }
-    const cosPhi = THREE.MathUtils.clamp(offset.y / offset.length(), -1, 1);
-    this._graphOrbitPitch = Math.acos(cosPhi);
-    const sinP = Math.sin(this._graphOrbitPitch);
-    this._graphOrbitYaw = Math.abs(sinP) > 1e-6 ? Math.atan2(offset.x, offset.z) : 0;
+    this._graphOrbitDir.copy(offset).normalize();
+    this._syncOrbitAnglesFromDir(this._graphOrbitDir, true);
   }
 
   /**
@@ -1146,21 +1204,13 @@ class CameraController {
   _updateGraphView(_dt) {
     const cam = this.camera;
     const center = this._getGraphOrbitCenter();
-    const phi = this._graphOrbitPitch;
-    const theta = this._graphOrbitYaw;
-    const sinP = Math.sin(phi);
     const r = this._graphOrbitDistance;
-    const offset = new THREE.Vector3(
-      r * sinP * Math.sin(theta),
-      r * Math.cos(phi),
-      r * sinP * Math.cos(theta)
-    );
-    const ideal = center.clone().add(offset);
+    const ideal = center.clone().addScaledVector(this._graphOrbitDir, r);
     const t = this.isMobile ? 0.06 : 0.04;
     cam.position.lerp(ideal, t);
-    const qFree = this._orbitQuaternion(theta, phi);
-    this._applyOrbitRollStabilization(ideal, center, qFree, _qRollStabilizedScratch);
-    cam.quaternion.slerp(_qRollStabilizedScratch, t);
+    const qFree = this._orbitQuaternion(this._graphOrbitYaw, this._graphOrbitPitch);
+    this._applyOrbitRollStabilization(cam.position, center, qFree, _qRollStabilizedScratch);
+    cam.quaternion.copy(_qRollStabilizedScratch);
   }
 
   update(dt) {
@@ -1180,6 +1230,7 @@ class CameraController {
         this._followDistanceScale = 1;
       }
       this._followOrbitPitch = this._defaultFollowPitch();
+      this._syncOrbitDirFromAngles(false);
       if (this._introOrbitActive && this.followPlanet?.mesh && !this.followComet) {
         this._snapCameraToPlanetOrbitDistance(INTRO_ORBIT_FROM_DIST);
       }
@@ -1263,17 +1314,9 @@ class CameraController {
     const cam = this.camera;
     const orbitCenter = new THREE.Vector3();
     this.followPlanet.mesh.getWorldPosition(orbitCenter);
-    const phi = this._followOrbitPitch;
-    const theta = this._followOrbitYaw;
-    const sinP = Math.sin(phi);
     const r = worldDistance;
-    const offset = new THREE.Vector3(
-      r * sinP * Math.sin(theta),
-      r * Math.cos(phi),
-      r * sinP * Math.cos(theta)
-    );
-    cam.position.copy(orbitCenter).add(offset);
-    const qFree = this._orbitQuaternion(theta, phi);
+    cam.position.copy(orbitCenter).addScaledVector(this._followOrbitDir, r);
+    const qFree = this._orbitQuaternion(this._followOrbitYaw, this._followOrbitPitch);
     this._applyOrbitRollStabilization(cam.position, orbitCenter, qFree, _qRollStabilizedScratch);
     cam.quaternion.copy(_qRollStabilizedScratch);
   }
@@ -1340,15 +1383,7 @@ class CameraController {
       this._followDistanceScale = Math.max(this._followDistanceScale, minScale);
     }
     const r = baseR * this._followDistanceScale;
-    const phi = this._followOrbitPitch;
-    const theta = this._followOrbitYaw;
-    const sinP = Math.sin(phi);
-    const offset = new THREE.Vector3(
-      r * sinP * Math.sin(theta),
-      r * Math.cos(phi),
-      r * sinP * Math.cos(theta)
-    );
-    const ideal = orbitCenter.clone().add(offset);
+    const ideal = orbitCenter.clone().addScaledVector(this._followOrbitDir, r);
     const lerpT =
       this._introOrbitActive && this.followPlanet && !this.followComet
         ? 0.085
@@ -1356,9 +1391,9 @@ class CameraController {
           ? 0.055
           : 0.02;
     cam.position.lerp(ideal, lerpT);
-    const qFree = this._orbitQuaternion(theta, phi);
-    this._applyOrbitRollStabilization(ideal, orbitCenter, qFree, _qRollStabilizedScratch);
-    cam.quaternion.slerp(_qRollStabilizedScratch, lerpT);
+    const qFree = this._orbitQuaternion(this._followOrbitYaw, this._followOrbitPitch);
+    this._applyOrbitRollStabilization(cam.position, orbitCenter, qFree, _qRollStabilizedScratch);
+    cam.quaternion.copy(_qRollStabilizedScratch);
   }
 
   _updateFreeCamera(dt) {

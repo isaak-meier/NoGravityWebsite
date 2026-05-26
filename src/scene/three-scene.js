@@ -5,6 +5,7 @@ import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPa
 import GUI from "lil-gui";
 import AudioFFT from "../audio/audio-fft.js";
 import { isEnabled } from "../config/feature-flags.js";
+import { getMockOffline, isOffline, setMockOffline } from "../util/is-offline.js";
 import appConfig from "../config/app-config.js";
 import {
   BUILD_ID,
@@ -37,8 +38,11 @@ import { attachPlanetInteriorGoop } from "./planet-goop-material.js";
 import { mountScreenDials } from "../ui/screen-dials.js";
 import { createPlanetMailingPanel } from "../ui/planet-mailing-panel.js";
 import { createPlanetSongPromoPanel } from "../ui/planet-song-promo-panel.js";
+import { createGreenPlanetFadeHandles } from "../ui/green-planet-fade-handles.js";
+import { createPlanetSwitcher } from "../ui/planet-switcher.js";
 import { createAuthClient } from "../auth/auth-client.js";
 import { createAuthUI } from "../auth/auth-ui.js";
+import { attachMobileControlPanel } from "../ui/mobile-control-panel.js";
 
 function logNxgrxvityBuildStamp() {
   if (typeof console === "undefined" || !console.log) return;
@@ -275,6 +279,20 @@ function createGuiShell() {
   const gui = new GUI({ closeFolders: true, autoPlace: false });
   gui.close();
   return gui;
+}
+
+/** Dev folder: mock offline for music toast / Drive errors without disconnecting Wi‑Fi. */
+function setupMockOfflineGui(gui, onChange) {
+  const dev = gui.addFolder("Dev");
+  const params = { mockOffline: getMockOffline() };
+  dev
+    .add(params, "mockOffline")
+    .name("Mock offline")
+    .onChange((v) => {
+      setMockOffline(v);
+      onChange?.();
+    });
+  dev.close();
 }
 
 /** Planet color + radius folder (used after Comet folder when GUI order matters). */
@@ -727,33 +745,28 @@ function createSongPickerDOM(isMobile) {
   driveFilesList.style.cssText = "display:none;";
   driveFilesList.appendChild(new Option("Select an audio file...", ""));
 
-  const btnStyle =
-    "padding:4px 10px;border:1px solid rgba(255,255,255,0.3);border-radius:4px;" +
-    "background:rgba(255,255,255,0.08);color:#e6eef8;cursor:pointer;font-size:12px;" +
-    "transition:background 0.2s;";
-  const activeBtnStyle =
-    "padding:4px 10px;border:1px solid #60a5fa;border-radius:4px;" +
-    "background:rgba(96,165,250,0.25);color:#60a5fa;cursor:pointer;font-size:12px;" +
-    "transition:background 0.2s;";
-
-  const micBtn = document.createElement("button");
-  micBtn.textContent = "Mic";
-  micBtn.title = "Use microphone as live audio input";
-  micBtn.style.cssText = btnStyle;
-
   wrapper.appendChild(driveFilesList);
-  wrapper.appendChild(micBtn);
-  return { wrapper, driveFilesList, micBtn, btnStyle, activeBtnStyle };
+  return { wrapper, driveFilesList };
 }
 
 // --- Google Drive song picker ---------------------------------------------
 
-function setupSongPicker(parentEl, audioState, onSpectrum, onNewSource, isMobile, beatDetector, notifyMusicUi) {
+function setupSongPicker(
+  parentEl,
+  audioState,
+  onSpectrum,
+  onNewSource,
+  isMobile,
+  beatDetector,
+  notifyMusicUi,
+  micUi,
+) {
   initializeGoogleAuth();
   const dom = createSongPickerDOM(isMobile);
   parentEl.appendChild(dom.wrapper);
   const driveState = { provider: null };
   let activeLiveMode = null; // "mic" | "desktop" | null
+  const { micBtn, syncMicToggle } = micUi ?? {};
 
   function setMusicLoadPhase(phase, { offline = false } = {}) {
     audioState._musicLoadPhase = phase;
@@ -763,8 +776,8 @@ function setupSongPicker(parentEl, audioState, onSpectrum, onNewSource, isMobile
 
   function deactivateLive() {
     stopLiveAudio(audioState);
-    dom.micBtn.style.cssText = dom.btnStyle;
     activeLiveMode = null;
+    syncMicToggle?.();
     notifyMusicUi?.();
   }
 
@@ -778,17 +791,21 @@ function setupSongPicker(parentEl, audioState, onSpectrum, onNewSource, isMobile
     try {
       await startLiveAudio("mic", audioState, onSpectrum, onNewSource, beatDetector);
       activeLiveMode = "mic";
-      dom.micBtn.style.cssText = dom.activeBtnStyle;
     } catch (err) {
       console.warn("Live audio (mic) failed:", err);
     }
+    syncMicToggle?.();
     notifyMusicUi?.();
   }
 
-  dom.micBtn.addEventListener("click", () => toggleLive());
+  micBtn?.addEventListener("click", () => toggleLive());
 
   async function loadDriveFile(fileId) {
     if (!fileId || !driveState.provider) return;
+    if (isOffline()) {
+      applyMusicNetworkBlocked();
+      return;
+    }
     setMusicLoadPhase("loading");
     deactivateLive();
     try {
@@ -808,7 +825,7 @@ function setupSongPicker(parentEl, audioState, onSpectrum, onNewSource, isMobile
     } catch (err) {
       console.error("Error loading audio:", err);
       setMusicLoadPhase("error", {
-        offline: typeof navigator !== "undefined" && !navigator.onLine,
+        offline: isOffline(),
       });
     }
   }
@@ -818,7 +835,19 @@ function setupSongPicker(parentEl, audioState, onSpectrum, onNewSource, isMobile
     await loadDriveFile(e.target.value);
   });
 
+  function applyMusicNetworkBlocked() {
+    stopAudio(audioState);
+    deactivateLive();
+    dom.driveFilesList.style.display = "none";
+    setMusicLoadPhase("error", { offline: isOffline() });
+  }
+
   async function connectDrive(provider, autoSelectFirst) {
+    if (isOffline()) {
+      driveState.provider = provider;
+      applyMusicNetworkBlocked();
+      return;
+    }
     setMusicLoadPhase("loading");
     try {
       driveState.provider = provider;
@@ -841,7 +870,7 @@ function setupSongPicker(parentEl, audioState, onSpectrum, onNewSource, isMobile
     } catch (err) {
       console.error("Configured Google Drive folder failed:", err);
       setMusicLoadPhase("error", {
-        offline: typeof navigator !== "undefined" && !navigator.onLine,
+        offline: isOffline(),
       });
     }
   }
@@ -854,9 +883,27 @@ function setupSongPicker(parentEl, audioState, onSpectrum, onNewSource, isMobile
     audioState._musicDriveConfigured = true;
     notifyMusicUi?.();
     const provider = new GoogleDriveAudioProvider({ folderId: presetFolderId, apiKey: presetApiKey || null });
+    if (isOffline()) {
+      driveState.provider = provider;
+      applyMusicNetworkBlocked();
+    } else {
+      void connectDrive(provider, isEnabled("AUTOPLAY_FIRST_DRIVE_TRACK_ON_LOAD"));
+    }
+  }
+
+  function onMockOfflineChange() {
+    if (isOffline()) {
+      applyMusicNetworkBlocked();
+      return;
+    }
+    if (!presetFolderId) return;
+    const provider =
+      driveState.provider ??
+      new GoogleDriveAudioProvider({ folderId: presetFolderId, apiKey: presetApiKey || null });
     void connectDrive(provider, isEnabled("AUTOPLAY_FIRST_DRIVE_TRACK_ON_LOAD"));
   }
-  return dom.wrapper;
+
+  return { wrapper: dom.wrapper, onMockOfflineChange };
 }
 
 // --- Planet interior (camera inside) ------------------------------------
@@ -895,9 +942,14 @@ function initScene() {
   const container = document.getElementById("three-container");
   if (!container) { console.warn("No #three-container found"); return; }
 
+  const isMobile = detectMobile();
+  if (isMobile) {
+    container.classList.add("three-container--mobile");
+    document.documentElement.classList.add("mobile-hud");
+  }
+
   const scene = new THREE.Scene();
   const camera = createCamera(container);
-  const isMobile = detectMobile();
   const renderer = createRenderer(container);
 
   const { composer, bloomPass } = setupPostProcessing(renderer, scene, camera, container);
@@ -1030,6 +1082,7 @@ function initScene() {
     const bass = bassSum / bassEnd;
     solarSystem.setGraphAudioDrive({ loudness, bass });
     solarSystem.setGraphEqBands(spectrumToGraphEqBands(spectrum));
+    greenPlanetFadeHandles.setAudioLevel(bass);
 
     applySpectrumToParams(spectrum, {
       planetParams,
@@ -1042,7 +1095,11 @@ function initScene() {
       baseRadius,
     });
 
-    beatDetector.update(spectrum);
+    const beatInfo = beatDetector.update(spectrum);
+    if (beatInfo.isBeat) {
+      greenPlanetFadeHandles.pulse(beatInfo.intensity || 1);
+    }
+    solarSystem.tryTriggerRedPlanetOnBeat(beatInfo.isBeat);
 
     if (!audioState._liveStream && graphLaserDecodedBuffer) {
       const bar = beatDetector.barDuration;
@@ -1073,16 +1130,33 @@ function initScene() {
   const bottomHud = document.createElement("div");
   bottomHud.className = "bottom-left-hud";
   container.appendChild(bottomHud);
-  const cockpit = mountScreenDials(bottomHud, {
+  const controlsHost = attachMobileControlPanel(bottomHud, isMobile);
+  const cockpit = mountScreenDials(controlsHost, {
     pyramidField,
     audioState,
     toggleAudioPlayback,
     solarSystem,
   });
-  syncMusicUi = cockpit.syncMusicToggle;
-  setupSongPicker(bottomHud, audioState, onSpectrum, onNewAudioSource, isMobile, beatDetector, syncMusicUi);
+  syncMusicUi = () => {
+    cockpit.syncMusicToggle();
+    cockpit.syncMicToggle();
+  };
+  const songPicker = setupSongPicker(
+    controlsHost,
+    audioState,
+    onSpectrum,
+    onNewAudioSource,
+    isMobile,
+    beatDetector,
+    syncMusicUi,
+    { micBtn: cockpit.micBtn, syncMicToggle: cockpit.syncMicToggle },
+  );
   if (gui) {
-    bottomHud.appendChild(gui.domElement);
+    setupMockOfflineGui(gui, () => {
+      songPicker.onMockOfflineChange?.();
+      syncMusicUi();
+    });
+    controlsHost.appendChild(gui.domElement);
   }
 
   // Camera controller via CameraController class
@@ -1109,6 +1183,11 @@ function initScene() {
       },
     });
   }
+
+  const greenPlanetFadeHandles = createGreenPlanetFadeHandles(container, {
+    camera,
+    planet: solarSystem.planets[2],
+  });
 
   const enterPlanetHud = document.createElement("div");
   enterPlanetHud.className = "enter-planet-hud";
@@ -1139,6 +1218,13 @@ function initScene() {
   cameraDistanceHud.appendChild(cameraDistanceLabel);
   cameraDistanceHud.appendChild(cameraDistanceValueEl);
   container.appendChild(cameraDistanceHud);
+
+  const planetSwitcher = createPlanetSwitcher({
+    planets: solarSystem.planets,
+    comet,
+    camCtrl,
+  });
+  container.appendChild(planetSwitcher.root);
 
   const planetGoopOverlay = document.createElement("div");
   planetGoopOverlay.className = "planet-goop-overlay";
@@ -1233,6 +1319,7 @@ function initScene() {
       { mesh: sphere, radius: planetParams.radius },
     );
     camCtrl.update(t);
+    planetSwitcher.syncActive();
     const insidePlanet = isCameraInsideAnyPlanet(camera.position, solarSystem.planets);
     if (insidePlanet !== enterPlanetHudInside) {
       enterPlanetHudInside = insidePlanet;
@@ -1246,6 +1333,8 @@ function initScene() {
     }
     planetGoopOverlay.classList.toggle("planet-goop-overlay--visible", insidePlanet);
     planetInteriorPanel.setInsidePlanet(insidePlanet);
+    greenPlanetFadeHandles.setVisible(camCtrl.followPlanet === solarSystem.planets[2]);
+    greenPlanetFadeHandles.update(t);
     composer.render();
   })();
 }

@@ -13,7 +13,9 @@ describe("showCockpitToast", () => {
     showCockpitToast("You're offline");
     const toast = document.querySelector(".cockpit-toast");
     expect(toast?.textContent).toBe("You're offline");
-    expect(document.querySelector(".cockpit-toast-host")).toBeTruthy();
+    const host = document.querySelector(".cockpit-toast-host");
+    expect(host).toBeTruthy();
+    expect(host?.getAttribute("aria-label")).toBe("Notifications");
   });
 
   it("removes the toast after the duration", () => {
