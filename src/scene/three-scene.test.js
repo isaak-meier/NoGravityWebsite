@@ -960,27 +960,20 @@ describe('three-scene helpers', () => {
   // ── createSongPickerDOM ─────────────────────────────────────────────
 
   describe('createSongPickerDOM', () => {
-    it('returns wrapper with driveFilesList and micBtn', () => {
+    it('returns wrapper with driveFilesList', () => {
       const dom = createSongPickerDOM();
       expect(dom.wrapper).toBeInstanceOf(HTMLElement);
       expect(dom.driveFilesList).toBeInstanceOf(HTMLSelectElement);
-      expect(dom.micBtn).toBeInstanceOf(HTMLButtonElement);
     });
 
-    it('wrapper contains driveFilesList and micBtn', () => {
+    it('wrapper contains driveFilesList', () => {
       const dom = createSongPickerDOM();
       expect(dom.wrapper.contains(dom.driveFilesList)).toBe(true);
-      expect(dom.wrapper.contains(dom.micBtn)).toBe(true);
     });
 
     it('drive files dropdown is initially hidden', () => {
       const dom = createSongPickerDOM();
       expect(dom.driveFilesList.style.display).toBe('none');
-    });
-
-    it('mic button defaults to "Mic"', () => {
-      const dom = createSongPickerDOM();
-      expect(dom.micBtn.textContent).toBe('Mic');
     });
   });
 

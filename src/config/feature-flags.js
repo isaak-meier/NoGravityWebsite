@@ -9,8 +9,15 @@ const FLAGS = {
   ENABLE_UPLOAD: true,
   /** Dev: first frame starts comet orbit follow (same controls as planet). Off = normal planet camera. */
   COMET_DEV_INSPECT_ON_LOAD: false,
+  /**
+   * Dev: lock camera to the Red planet on load with no 5s intro orbit zoom-in.
+   * Turn off before shipping (Blue at origin remains {@link SolarSystem#primary} for pyramids / HUD).
+   */
+  DEV_START_ON_RED_PLANET: true,
   /** First Google Drive track loads and plays on load when a folder is configured. */
   AUTOPLAY_FIRST_DRIVE_TRACK_ON_LOAD: true,
+  /** Dev: treat the app as offline (music toast, Drive load errors). Toggle in GUI → Dev. */
+  MOCK_OFFLINE: false,
 };
 
 /**

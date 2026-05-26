@@ -348,6 +348,10 @@ html, body {
   align-items: flex-start;
   gap: 8px;
   box-sizing: border-box;
+  max-width: min(
+    420px,
+    calc(100vw - 24px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - var(--hud-right-reserve, 296px))
+  );
   max-height: calc(100vh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
   max-height: calc(100dvh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
   overflow-y: auto;
@@ -360,13 +364,129 @@ html, body {
   pointer-events: auto;
 }
 
+/* Screen dials fill the HUD column so rows (e.g. Lasers select) are not clipped at the right edge */
+.bottom-left-hud .screen-dials {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.bottom-left-hud .screen-dials .screen-dial {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.bottom-left-hud .screen-dials .screen-dial--graph-lasers {
+  min-width: 0;
+}
+
+.bottom-left-hud .screen-dials .screen-dial--graph-lasers .screen-dial__widget {
+  flex: 1;
+  min-width: 0;
+  align-items: stretch;
+}
+
+.bottom-left-hud .screen-dials .cockpit-graph-laser-select {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* Mobile: collapse bottom HUD behind one cockpit toggle (mobile-control-panel.js) */
+.bottom-left-hud--collapsible {
+  overflow: visible;
+  max-height: none;
+}
+
+.bottom-left-hud__drawer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  max-width: min(calc(100vw - 40px), 420px);
+  max-height: calc(
+    100dvh - 72px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)
+  );
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 4px;
+}
+
+.bottom-left-hud__drawer[hidden] {
+  display: none !important;
+}
+
+.cockpit-control-panel-btn {
+  position: relative;
+  font-family: "Orbitron", system-ui, sans-serif;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 8px 14px;
+  border-radius: 2px;
+  border: 1px solid rgba(34, 211, 238, 0.28);
+  background:
+    linear-gradient(165deg, rgba(22, 32, 48, 0.97) 0%, rgba(8, 12, 20, 0.99) 100%);
+  color: rgba(224, 250, 255, 0.95);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.6),
+    0 6px 28px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.cockpit-control-panel-btn::before,
+.cockpit-control-panel-btn::after {
+  content: "";
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  pointer-events: none;
+}
+
+.cockpit-control-panel-btn::before {
+  top: -1px;
+  left: -1px;
+  border-top: 2px solid rgba(34, 211, 238, 0.75);
+  border-left: 2px solid rgba(34, 211, 238, 0.75);
+}
+
+.cockpit-control-panel-btn::after {
+  bottom: -1px;
+  right: -1px;
+  border-bottom: 2px solid rgba(34, 211, 238, 0.75);
+  border-right: 2px solid rgba(34, 211, 238, 0.75);
+}
+
+.cockpit-control-panel-btn--open {
+  border-color: rgba(34, 211, 238, 0.55);
+  color: rgba(186, 230, 253, 0.98);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.6),
+    0 6px 28px rgba(0, 0, 0, 0.55),
+    0 0 14px rgba(34, 211, 238, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.cockpit-control-panel-btn:focus-visible {
+  outline: 2px solid rgba(34, 211, 238, 0.75);
+  outline-offset: 2px;
+}
+
 /* Top-left: distance from camera to active planet center (three-scene.js) */
 .camera-distance-hud {
   position: absolute;
-  top: calc(12px + env(safe-area-inset-top, 0px));
+  top: calc(var(--site-title-band, 56px) + env(safe-area-inset-top, 0px));
   left: calc(12px + env(safe-area-inset-left, 0px));
   z-index: 20;
   pointer-events: none;
+  max-width: min(16rem, calc(100vw - 24px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
   font-family: "Orbitron", system-ui, sans-serif;
   font-size: 0.7rem;
   letter-spacing: 0.06em;
@@ -390,10 +510,11 @@ html, body {
 /* Top-right: fly-in to planet interior (three-scene.js) */
 .enter-planet-hud {
   position: absolute;
-  top: calc(12px + env(safe-area-inset-top, 0px));
+  top: calc(var(--site-title-band, 56px) + env(safe-area-inset-top, 0px));
   right: calc(12px + env(safe-area-inset-right, 0px));
   z-index: 20;
   pointer-events: auto;
+  max-width: min(14rem, calc(100vw - 24px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
 }
 
 .enter-planet-btn {
@@ -423,6 +544,90 @@ html, body {
   box-shadow:
     0 0 0 2px rgba(34, 211, 238, 0.85),
     0 0 20px rgba(34, 211, 238, 0.3);
+}
+
+/* Bottom-right: jump camera between planets / comet / galaxy (planet-switcher.js) */
+.planet-switcher-hud {
+  position: absolute;
+  right: calc(12px + env(safe-area-inset-right, 0px));
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  z-index: 20;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: min(92vw, 280px);
+  font-family: "Orbitron", system-ui, sans-serif;
+}
+
+.planet-switcher-hud__label {
+  font-size: 0.58rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(186, 230, 253, 0.75);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
+}
+
+.planet-switcher-hud__list {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.planet-switcher-btn {
+  font-family: inherit;
+  font-size: 0.62rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 5px 8px 5px 6px;
+  border-radius: 5px;
+  border: 1px solid rgba(34, 211, 238, 0.35);
+  background: rgba(8, 18, 32, 0.78);
+  color: rgba(224, 250, 255, 0.9);
+  box-shadow:
+    0 0 8px rgba(34, 211, 238, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.planet-switcher-btn__swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.25);
+}
+
+.planet-switcher-btn--comet .planet-switcher-btn__swatch,
+.planet-switcher-btn--galaxy .planet-switcher-btn__swatch {
+  display: none;
+}
+
+.planet-switcher-btn:hover {
+  border-color: rgba(34, 211, 238, 0.65);
+  background: rgba(12, 28, 48, 0.88);
+}
+
+.planet-switcher-btn--active {
+  border-color: rgba(34, 211, 238, 0.9);
+  background: rgba(14, 36, 58, 0.95);
+  box-shadow:
+    0 0 14px rgba(34, 211, 238, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  color: rgba(240, 253, 255, 1);
+}
+
+.planet-switcher-btn:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px rgba(34, 211, 238, 0.85),
+    0 0 16px rgba(34, 211, 238, 0.28);
 }
 
 /* Planet interior — centered stack: sign-in + mailing (three-scene.js) */
@@ -922,7 +1127,51 @@ a.planet-mailing-panel__hypeddit-link {
   text-shadow: 0 0 12px rgba(34, 211, 238, 0.35);
 }
 
-/* Music switch — matches cockpit dial panels */
+/* Music + mic switches — labels above toggles, side by side */
+.screen-dials .screen-dial--music {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.screen-dials .screen-dial__main-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.screen-dials .screen-dial__main-row--audio {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.screen-dials .screen-dial__control {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.screen-dials .screen-dial--music .screen-dial__name {
+  min-width: 0;
+  padding-right: 0;
+}
+
+.screen-dial--music-off .screen-dial__control--music .cockpit-toggle__track {
+  border-color: rgba(100, 116, 139, 0.45);
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.65);
+}
+
+.screen-dial--music-off .screen-dial__control--music .cockpit-toggle__thumb {
+  background: linear-gradient(145deg, #475569 0%, #334155 100%);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.screen-dial__control--mic.screen-dial__control--mic-on .screen-dial__name {
+  color: rgba(251, 191, 36, 0.75);
+}
+
 .cockpit-toggle {
   position: relative;
   width: 52px;
@@ -982,18 +1231,90 @@ a.planet-mailing-panel__hypeddit-link {
     inset 0 1px 0 rgba(255, 255, 255, 0.45);
 }
 
-.screen-dial--music-off .cockpit-toggle__track {
-  border-color: rgba(100, 116, 139, 0.45);
-  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.65);
+.cockpit-toggle--muted {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
-.screen-dial--music-off .cockpit-toggle__thumb {
+.cockpit-toggle--muted .cockpit-toggle__track {
+  border-color: rgba(100, 116, 139, 0.45);
+}
+
+.cockpit-toggle--muted .cockpit-toggle__thumb {
   background: linear-gradient(145deg, #475569 0%, #334155 100%);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
 }
 
-.screen-dial--music-live .screen-dial__name {
-  color: rgba(251, 191, 36, 0.55);
+/* Cockpit toast (cockpit-toast.js) */
+.cockpit-toast-host {
+  position: fixed;
+  left: 50%;
+  bottom: calc(88px + env(safe-area-inset-bottom, 0px));
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: min(92vw, 24rem);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.cockpit-toast {
+  position: relative;
+  margin: 0;
+  padding: 10px 16px 10px 18px;
+  font-family: "Orbitron", system-ui, sans-serif;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1.45;
+  text-align: center;
+  color: rgba(180, 220, 240, 0.92);
+  text-shadow: 0 0 12px rgba(34, 211, 238, 0.35);
+  background:
+    linear-gradient(165deg, rgba(22, 32, 48, 0.97) 0%, rgba(8, 12, 20, 0.99) 100%);
+  border: 1px solid rgba(34, 211, 238, 0.28);
+  border-radius: 2px;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.6),
+    0 6px 28px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  animation: cockpit-toast-in 0.22s ease-out;
+  pointer-events: auto;
+}
+
+.cockpit-toast::before,
+.cockpit-toast::after {
+  content: "";
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  pointer-events: none;
+}
+
+.cockpit-toast::before {
+  top: -1px;
+  left: -1px;
+  border-top: 2px solid rgba(34, 211, 238, 0.75);
+  border-left: 2px solid rgba(34, 211, 238, 0.75);
+}
+
+.cockpit-toast::after {
+  bottom: -1px;
+  right: -1px;
+  border-bottom: 2px solid rgba(34, 211, 238, 0.75);
+  border-right: 2px solid rgba(34, 211, 238, 0.75);
+}
+
+@keyframes cockpit-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* Shatter clock — BPM / bar / countdown (screen-dials.js) */
@@ -1105,12 +1426,86 @@ a.planet-mailing-panel__hypeddit-link {
   outline-offset: 2px;
 }
 
+/* ── Planet Growth palette handles (orbit around the green planet) ── */
+.green-fade-handle {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid rgba(248, 250, 252, 0.95);
+  transform: translate(-50%, -50%);
+  z-index: 10;
+  pointer-events: none;
+  user-select: none;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.6), 0 0 14px rgba(255, 255, 255, 0.15);
+  transition: transform 0.18s ease;
+}
+
+.green-fade-handle--hidden {
+  display: none;
+}
+
+.planet-growth-title {
+  position: absolute;
+  top: calc(var(--site-title-band, 56px) + 8px + env(safe-area-inset-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100vw - 24rem - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+  font-family: "Orbitron", system-ui, sans-serif;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgba(248, 250, 252, 0.95);
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.7), 0 0 24px rgba(74, 222, 128, 0.35);
+  pointer-events: none;
+  user-select: none;
+  z-index: 10;
+  white-space: nowrap;
+}
+
+.planet-growth-title--hidden {
+  display: none;
+}
+
+/* ── Mobile HUD layout: reserved corners, no overlap (three-container--mobile) ── */
+html.mobile-hud {
+  --hud-top-inset: calc(52px + env(safe-area-inset-top, 0px));
+  --hud-side-gap: calc(10px + env(safe-area-inset-left, 0px));
+  --hud-side-gap-right: calc(10px + env(safe-area-inset-right, 0px));
+  --hud-bottom-inset: calc(12px + env(safe-area-inset-bottom, 0px));
+  --hud-corner-max-w: calc(50vw - 14px);
+  --hud-bottom-band: 108px;
+  --hud-right-reserve: calc(50vw + 8px);
+}
+
 @media (max-width: 640px) {
+  :root {
+    --hud-top-inset: calc(52px + env(safe-area-inset-top, 0px));
+    --hud-side-gap: calc(10px + env(safe-area-inset-left, 0px));
+    --hud-side-gap-right: calc(10px + env(safe-area-inset-right, 0px));
+    --hud-bottom-inset: calc(12px + env(safe-area-inset-bottom, 0px));
+    --hud-corner-max-w: calc(50vw - 14px);
+    --hud-bottom-band: 108px;
+    --hud-right-reserve: calc(50vw + 8px);
+  }
+
+  .site-title {
+    padding: 0.65rem 0.5rem 0.35rem;
+    font-size: clamp(0.75rem, 4.2vw, 1.05rem);
+    letter-spacing: 0.18em;
+  }
+
   .bottom-left-hud {
-    left: calc(10px + env(safe-area-inset-left, 0px));
-    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
-    max-width: calc(100% - 20px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+    left: var(--hud-side-gap);
+    bottom: var(--hud-bottom-inset);
+    max-width: var(--hud-corner-max-w);
     gap: 6px;
+  }
+
+  .bottom-left-hud--collapsible {
+    overflow: visible;
+    max-height: none;
   }
 
   .bottom-left-hud .screen-dials .screen-dial {
@@ -1121,5 +1516,121 @@ a.planet-mailing-panel__hypeddit-link {
     min-width: 4.75em;
     font-size: 8px;
   }
+
+  #three-container .camera-distance-hud {
+    top: var(--hud-top-inset);
+    left: var(--hud-side-gap);
+    max-width: var(--hud-corner-max-w);
+  }
+
+  #three-container .enter-planet-hud {
+    top: var(--hud-top-inset);
+    right: var(--hud-side-gap-right);
+    max-width: var(--hud-corner-max-w);
+  }
+
+  #three-container .planet-switcher-hud {
+    right: var(--hud-side-gap-right);
+    bottom: var(--hud-bottom-inset);
+    max-width: var(--hud-corner-max-w);
+  }
+
+  #three-container .bottom-left-hud__drawer {
+    max-width: min(
+      420px,
+      calc(100vw - var(--hud-side-gap) - var(--hud-side-gap-right) - var(--hud-corner-max-w) - 8px)
+    );
+    max-height: calc(
+      100dvh - var(--hud-top-inset) - var(--hud-bottom-band) - env(safe-area-inset-bottom, 0px)
+    );
+  }
+
+  #three-container .bottom-left-hud--drawer-open {
+    max-width: min(
+      420px,
+      calc(100vw - var(--hud-side-gap) - var(--hud-side-gap-right) - 8px)
+    );
+  }
+
+  #three-container .bottom-left-hud--drawer-open .bottom-left-hud__drawer {
+    max-height: calc(
+      100dvh - var(--hud-top-inset) - var(--hud-bottom-inset) - 44px - env(safe-area-inset-bottom, 0px)
+    );
+  }
+
+  #three-container .planet-growth-title {
+    top: calc(var(--hud-top-inset) + 2px);
+    max-width: calc(100vw - 2 * var(--hud-corner-max-w) - 16px);
+    font-size: clamp(0.65rem, 3.2vw, 0.95rem);
+    letter-spacing: 0.14em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .cockpit-toast-host {
+    bottom: calc(var(--hud-bottom-band) + env(safe-area-inset-bottom, 0px));
+    max-width: min(92vw, calc(100vw - var(--hud-side-gap) - var(--hud-side-gap-right) - 16px));
+  }
+}
+
+.three-container--mobile .camera-distance-hud {
+  top: var(--hud-top-inset);
+  left: var(--hud-side-gap);
+  max-width: var(--hud-corner-max-w);
+}
+
+.three-container--mobile .enter-planet-hud {
+  top: var(--hud-top-inset);
+  right: var(--hud-side-gap-right);
+  max-width: var(--hud-corner-max-w);
+}
+
+.three-container--mobile .planet-switcher-hud {
+  right: var(--hud-side-gap-right);
+  bottom: var(--hud-bottom-inset);
+  max-width: var(--hud-corner-max-w);
+}
+
+.three-container--mobile .bottom-left-hud {
+  left: var(--hud-side-gap);
+  bottom: var(--hud-bottom-inset);
+  max-width: var(--hud-corner-max-w);
+}
+
+.three-container--mobile .bottom-left-hud__drawer {
+  max-width: min(
+    420px,
+    calc(100vw - var(--hud-side-gap) - var(--hud-side-gap-right) - var(--hud-corner-max-w) - 8px)
+  );
+  max-height: calc(
+    100dvh - var(--hud-top-inset) - var(--hud-bottom-band) - env(safe-area-inset-bottom, 0px)
+  );
+}
+
+.three-container--mobile .bottom-left-hud--drawer-open {
+  max-width: min(
+    420px,
+    calc(100vw - var(--hud-side-gap) - var(--hud-side-gap-right) - 8px)
+  );
+}
+
+.three-container--mobile .bottom-left-hud--drawer-open .bottom-left-hud__drawer {
+  max-height: calc(
+    100dvh - var(--hud-top-inset) - var(--hud-bottom-inset) - 44px - env(safe-area-inset-bottom, 0px)
+  );
+}
+
+.three-container--mobile .planet-growth-title {
+  top: calc(var(--hud-top-inset) + 2px);
+  max-width: calc(100vw - 2 * var(--hud-corner-max-w) - 16px);
+  font-size: clamp(0.65rem, 3.2vw, 0.95rem);
+  letter-spacing: 0.14em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+html.mobile-hud .cockpit-toast-host {
+  bottom: calc(var(--hud-bottom-band) + env(safe-area-inset-bottom, 0px));
+  max-width: min(92vw, calc(100vw - var(--hud-side-gap) - var(--hud-side-gap-right) - 16px));
 }
 
