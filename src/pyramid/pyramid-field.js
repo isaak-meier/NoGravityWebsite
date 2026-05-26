@@ -14,6 +14,7 @@ import {
 const _up = new THREE.Vector3(0, 1, 0);
 const _scratchVertex = new THREE.Vector3();
 const _planetCenterWorld = new THREE.Vector3();
+const _colliderWorld = new THREE.Vector3();
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 /** Epsilon for "fully inside" sphere test (world units). */
 const INSIDE_PLANET_EPS = 1e-4;
@@ -557,6 +558,31 @@ export default class PyramidField {
     patternFolder.open();
 
     return folder;
+  }
+
+  /**
+   * World-space bounding spheres for shard collision (cone proxy; larger when mid-shatter).
+   * @param {(o: { index: number, centerWorld: import('three').Vector3, radius: number }) => void} fn — `centerWorld` is reused; copy before async use.
+   */
+  forEachActiveShardCollider(fn) {
+    if (!this._shatter) return;
+    this.group.updateWorldMatrix(true, false);
+    const baseSize = this.config.size;
+    const shatteredInflate = 1.55;
+    for (let i = 0; i < this._shards.length; i++) {
+      const shard = this._shards[i];
+      if (shard.hiddenInside) continue;
+      const m = shard.mesh;
+      m.updateWorldMatrix(false, false);
+      m.getWorldPosition(_colliderWorld);
+      const sm = m.scale.x;
+      const h = baseSize * sm;
+      const br = baseSize * 0.4 * sm;
+      const localR = Math.hypot(h * 0.5, br);
+      const shattered = this._shatter.isShattered(i);
+      const radius = shattered ? localR * shatteredInflate : localR;
+      fn({ index: i, centerWorld: _colliderWorld, radius });
+    }
   }
 
   _disposeContents() {

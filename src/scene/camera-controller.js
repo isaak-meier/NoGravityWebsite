@@ -110,6 +110,7 @@ function isUiTouchTarget(el) {
     (el.closest(".bottom-left-hud") ||
       el.closest(".enter-planet-hud") ||
       el.closest(".planet-switcher-hud") ||
+      el.closest(".shard-flight-hud") ||
       el.closest(".planet-interior-hud") ||
       el.closest(".screen-dials") ||
       el.closest(".lil-gui"))
@@ -166,6 +167,11 @@ class CameraController {
      * @type {null | { mesh: import('three').Mesh, def?: { radius?: number } }}
      */
     this._fallbackFollowPlanet = null;
+    /**
+     * When true, the scene runs shard flight each frame and drives the camera; orbit follow is suspended.
+     * @type {boolean}
+     */
+    this.shardFlightMode = false;
     this.mouseLookEnabled = true;
     this.sun = null;
     this.sunLight = null;
@@ -291,6 +297,7 @@ class CameraController {
       "wheel",
       (e) => {
         e.preventDefault();
+        if (this.shardFlightMode) return;
         this._ensureFollowLocked();
         if (this._graphMode) {
           const factor = Math.exp(e.deltaY * GRAPH_ORBIT_ZOOM_SENSITIVITY);
@@ -416,7 +423,7 @@ class CameraController {
           this._orbitStart.y = e.touches[0].clientY;
           orbitLast = null;
           this._mobileTouchForward =
-            this.isMobile && !this.followPlanet && !this.followComet;
+            this.isMobile && !this.followPlanet && !this.followComet && !this.shardFlightMode;
         }
       },
       { passive: false }
@@ -453,7 +460,7 @@ class CameraController {
           const ody = t.clientY - this._orbitStart.y;
           if (odx * odx + ody * ody <= ORBIT_VS_FORWARD_PX * ORBIT_VS_FORWARD_PX) {
             this._mobileTouchForward =
-              this.isMobile && !this.followPlanet && !this.followComet;
+              this.isMobile && !this.followPlanet && !this.followComet && !this.shardFlightMode;
             return;
           }
           this._orbitUndecided = false;
@@ -618,6 +625,7 @@ class CameraController {
    * in that axis (see SWIPE_DEGREES_PER_FULL_DRAG). Planet follow uses FOLLOW_ORBIT_DRAG_*.
    */
   _applyTouchOrbit(dx, dy, container) {
+    if (this.shardFlightMode) return;
     const w = Math.max(container.clientWidth, 1);
     const h = Math.max(container.clientHeight, 1);
     const cam = this.camera;
@@ -688,6 +696,7 @@ class CameraController {
     );
 
     const runPick = (clientX, clientY) => {
+      if (this.shardFlightMode) return;
       const rect = dom.getBoundingClientRect();
       pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
@@ -791,6 +800,7 @@ class CameraController {
    * Suspended while graph view is active or a tween (enter-planet / graph-zoom) is running.
    */
   _ensureFollowLocked() {
+    if (this.shardFlightMode) return;
     if (this._graphMode) return;
     if (this._enterPlanetTween) return;
     if (this.followPlanet || this.followComet) return;
@@ -1214,6 +1224,9 @@ class CameraController {
   }
 
   update(dt) {
+    if (this.shardFlightMode) {
+      return;
+    }
     this._ensureFollowLocked();
     if (this.followPlanet !== this._lastFollowPlanet) {
       if (this._lastFollowPlanet && !this.followPlanet) {
