@@ -77,13 +77,66 @@ export function createShardFlightHud(container, {
   gameOver.appendChild(btnRow);
   container.appendChild(gameOver);
 
+  const telemetry = document.createElement("div");
+  telemetry.className = "shard-flight-telemetry";
+  telemetry.setAttribute("aria-live", "off");
+  telemetry.style.display = "none";
+  const titleEl = document.createElement("div");
+  titleEl.className = "shard-flight-telemetry__title";
+  titleEl.textContent = "Flight camera";
+  telemetry.appendChild(titleEl);
+  const rowEls = {};
+  for (const key of ["pos", "delta", "dist", "ship", "peak"]) {
+    const row = document.createElement("div");
+    row.className = "shard-flight-telemetry__row";
+    row.dataset.row = key;
+    row.textContent = "—";
+    telemetry.appendChild(row);
+    rowEls[key] = row;
+  }
+  container.appendChild(telemetry);
+
   const _ndc = new THREE.Vector3();
+
+  const fmt = (n) => (Number.isFinite(n) ? n.toFixed(2) : "—");
+  const fmtSigned = (n) => {
+    if (!Number.isFinite(n)) return "—";
+    const s = n >= 0 ? "+" : "";
+    return s + n.toFixed(2);
+  };
 
   return {
     root,
     setAimDotVisible(v) {
       aimDot.style.display = v ? "block" : "none";
       hint.style.display = v && !isMobile ? "block" : "none";
+      telemetry.style.display = v ? "block" : "none";
+    },
+    /**
+     * @param {object} t
+     * @param {import('three').Vector3} t.camPos
+     * @param {import('three').Vector3} t.camDelta
+     * @param {number} t.camMove
+     * @param {number} t.peakMove
+     * @param {number} t.distPlanet
+     * @param {number} t.distShip
+     * @param {number} t.distAim
+     * @param {import('three').Vector3} t.shipPos
+     * @param {number} t.shipSpeed
+     * @param {boolean} t.flightEngaged
+     */
+    syncTelemetry(t) {
+      if (telemetry.style.display === "none") return;
+      rowEls.pos.textContent =
+        `pos  x ${fmt(t.camPos.x)}  y ${fmt(t.camPos.y)}  z ${fmt(t.camPos.z)}`;
+      rowEls.delta.textContent =
+        `Δfr  x ${fmtSigned(t.camDelta.x)}  y ${fmtSigned(t.camDelta.y)}  z ${fmtSigned(t.camDelta.z)}  |Δ| ${fmt(t.camMove)}`;
+      rowEls.dist.textContent =
+        `dist planet ${fmt(t.distPlanet)}  ship ${fmt(t.distShip)}  aim ${fmt(t.distAim)}`;
+      rowEls.ship.textContent =
+        `ship x ${fmt(t.shipPos.x)}  y ${fmt(t.shipPos.y)}  z ${fmt(t.shipPos.z)}  spd ${fmt(t.shipSpeed)}`;
+      rowEls.peak.textContent =
+        `peak |Δ| ${fmt(t.peakMove)}  mode ${t.flightEngaged ? "chase" : "entry"}`;
     },
     /**
      * @param {import('three').Camera} camera
@@ -92,7 +145,13 @@ export function createShardFlightHud(container, {
      */
     syncAimDot(camera, aimWorld, el) {
       if (aimDot.style.display === "none") return;
+      camera.updateMatrixWorld();
       _ndc.copy(aimWorld).project(camera);
+      if (_ndc.z > 1) {
+        aimDot.style.visibility = "hidden";
+        return;
+      }
+      aimDot.style.visibility = "visible";
       const rect = el.getBoundingClientRect();
       const x = ((_ndc.x + 1) / 2) * rect.width + rect.left;
       const y = ((-_ndc.y + 1) / 2) * rect.height + rect.top;

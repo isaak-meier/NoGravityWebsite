@@ -2,34 +2,43 @@ import * as THREE from "three";
 import { spheresOverlap } from "./shard-flight-collision.js";
 
 const SHIP_RADIUS = 0.075;
-const AIM_SPEED = 28;
-const SHIP_ACCEL = 52;
-const SHIP_MAX_SPEED = 26;
+const AIM_SPEED = 22;
+const AIM_LEAD_MIN = 4;
+const AIM_LEAD_MAX = 16;
+const SHIP_ACCEL = 48;
+const SHIP_MAX_SPEED = 22;
+const SHIP_DRAG = 2.2;
+const FLIGHT_START_DIST = 40;
+const SHIP_RADIAL_INSET = 1.5;
 const SHELL_PAD_MIN = 0.32;
-const SHELL_MAX = 26;
-const CAM_BEHIND = 3.1;
-const CAM_UP = 0.62;
-const CAM_LERP_POS = 0.1;
+const SHELL_MAX = 55;
+const CAM_BEHIND = 3.4;
+const CAM_UP = 0.55;
 const EXPLODE_SEC = 0.75;
 
 const _fwd = new THREE.Vector3();
 const _right = new THREE.Vector3();
+const _camUp = new THREE.Vector3();
 const _toAim = new THREE.Vector3();
 const _planetCenter = new THREE.Vector3();
 const _offset = new THREE.Vector3();
 const _camWant = new THREE.Vector3();
-const _look = new THREE.Vector3();
 const _worldUp = new THREE.Vector3(0, 1, 0);
+const _viewDir = new THREE.Vector3();
+const _zForward = new THREE.Vector3(0, 0, 1);
+const _prevCamPos = new THREE.Vector3();
+const _camDelta = new THREE.Vector3();
 
 function buildShipGroup() {
   const g = new THREE.Group();
+  g.name = "shardFlightShip";
   const hull = new THREE.Mesh(
     new THREE.ConeGeometry(0.07, 0.32, 8),
     new THREE.MeshStandardMaterial({
-      color: 0x38bdf8,
+      color: 0xf97316,
       metalness: 0.45,
       roughness: 0.35,
-      emissive: 0x0c4a6e,
+      emissive: 0x7c2d12,
       emissiveIntensity: 0.35,
     }),
   );
@@ -37,7 +46,7 @@ function buildShipGroup() {
   g.add(hull);
   const glow = new THREE.Mesh(
     new THREE.SphereGeometry(0.035, 8, 8),
-    new THREE.MeshBasicMaterial({ color: 0x67e8f9 }),
+    new THREE.MeshBasicMaterial({ color: 0xfdba74 }),
   );
   glow.position.z = 0.12;
   g.add(glow);
@@ -73,17 +82,6 @@ function makeExplosionPoints() {
 }
 
 export default class ShardFlightGame {
-  /**
-   * @param {object} opts
-   * @param {import('three').Scene} opts.scene
-   * @param {import('three').PerspectiveCamera} opts.camera
-   * @param {import('./camera-controller.js').default} opts.camCtrl
-   * @param {import('../pyramid/pyramid-field.js').default} opts.pyramidField
-   * @param {import('three').Mesh} opts.planetMesh
-   * @param {() => number} opts.getPlanetRadius
-   * @param {HTMLElement} opts.container
-   * @param {{ setAimDotVisible: (v: boolean) => void, syncAimDot: (cam: import('three').Camera, aim: import('three').Vector3, container: HTMLElement) => void, showGameOver: () => void, hideGameOver: () => void }} opts.hud
-   */
   constructor({
     scene,
     camera,
@@ -103,96 +101,115 @@ export default class ShardFlightGame {
     this.container = container;
     this.hud = hud;
 
+    this.flightLayer = new THREE.Group();
+    this.flightLayer.name = "shardFlightLayer";
+    scene.add(this.flightLayer);
+
     this.active = false;
     this.gameOver = false;
+    this._flightEngaged = false;
     this.ship = buildShipGroup();
     this.velocity = new THREE.Vector3();
     this.aimWorld = new THREE.Vector3();
-    /** @type {THREE.Points | null} */
     this._explosion = null;
-    /** @type {number} agent debug: frame index for tick segmentation logs */
-    this._debugTickIndex = 0;
+    this._peakCamMove = 0;
+    _prevCamPos.copy(camera.position);
+  }
+
+  _steeringKeysDown() {
+    const k = this.camCtrl.keys;
+    return !!(k.w || k.s || k.a || k.d);
+  }
+
+  /** Camera forward / right / up for screen-space aim steering. */
+  _cameraBasis() {
+    this.camera.updateMatrixWorld();
+    this.camera.getWorldDirection(_fwd).normalize();
+    _right.crossVectors(_fwd, _worldUp);
+    if (_right.lengthSq() < 1e-8) _right.set(1, 0, 0);
+    else _right.normalize();
+    _camUp.crossVectors(_right, _fwd).normalize();
+  }
+
+  _placeAimAheadOfShip(dist = AIM_LEAD_MIN) {
+    this._cameraBasis();
+    this.aimWorld.copy(this.ship.position).addScaledVector(_fwd, dist);
+  }
+
+  _setupFlightStartPose() {
+    this.planetMesh.updateWorldMatrix(true, true);
+    this.planetMesh.getWorldPosition(_planetCenter);
+
+    _viewDir.subVectors(this.camera.position, _planetCenter);
+    if (_viewDir.lengthSq() < 1e-8) _viewDir.set(0, 0, 1);
+    else _viewDir.normalize();
+
+    const shipDist = FLIGHT_START_DIST - SHIP_RADIAL_INSET;
+    this.ship.position.copy(_planetCenter).addScaledVector(_viewDir, shipDist);
+    this.ship.quaternion.setFromUnitVectors(_zForward, _viewDir);
+
+    this.camera.position.copy(_planetCenter).addScaledVector(_viewDir, FLIGHT_START_DIST);
+    this.camera.lookAt(_planetCenter);
+    this._placeAimAheadOfShip(AIM_LEAD_MIN);
+  }
+
+  _maintainEntryPose() {
+    this.planetMesh.getWorldPosition(_planetCenter);
+    const shipDist = FLIGHT_START_DIST - SHIP_RADIAL_INSET;
+
+    this.camera.position.copy(_planetCenter).addScaledVector(_viewDir, FLIGHT_START_DIST);
+    this.camera.lookAt(_planetCenter);
+
+    this.ship.position.copy(_planetCenter).addScaledVector(_viewDir, shipDist);
+    this.ship.quaternion.setFromUnitVectors(_zForward, _viewDir);
+    this._placeAimAheadOfShip(AIM_LEAD_MIN);
+  }
+
+  _constrainAimToShell() {
+    this.planetMesh.getWorldPosition(_planetCenter);
+    _offset.subVectors(this.aimWorld, _planetCenter);
+    const d = _offset.length();
+    const minD = this.getPlanetRadius() + SHELL_PAD_MIN;
+    const maxD = SHELL_MAX;
+    if (d > maxD && d > 1e-6) {
+      _offset.multiplyScalar(maxD / d);
+      this.aimWorld.copy(_planetCenter).add(_offset);
+    } else if (d < minD && d > 1e-6) {
+      _offset.multiplyScalar(minD / d);
+      this.aimWorld.copy(_planetCenter).add(_offset);
+    }
+  }
+
+  _constrainAimAroundShip() {
+    _toAim.subVectors(this.aimWorld, this.ship.position);
+    const dist = _toAim.length();
+    if (dist < AIM_LEAD_MIN && dist > 1e-6) {
+      _toAim.multiplyScalar(AIM_LEAD_MIN / dist);
+      this.aimWorld.copy(this.ship.position).add(_toAim);
+    } else if (dist > AIM_LEAD_MAX) {
+      _toAim.multiplyScalar(AIM_LEAD_MAX / dist);
+      this.aimWorld.copy(this.ship.position).add(_toAim);
+    }
   }
 
   enter() {
     if (this.active) return;
-    // #region agent log
-    const _agentEnterT0 = performance.now();
-    fetch("http://127.0.0.1:7420/ingest/78a6f2ec-47fb-4ea6-9cbc-d865eb7eaeff", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "297bb4" },
-      body: JSON.stringify({
-        sessionId: "297bb4",
-        location: "shard-flight-game.js:enter",
-        message: "enter start",
-        data: {},
-        timestamp: Date.now(),
-        hypothesisId: "H5",
-        runId: "pre-fix",
-      }),
-    }).catch(() => {});
-    // #endregion
     this.active = true;
     this.gameOver = false;
+    this._flightEngaged = false;
     this.camCtrl.shardFlightMode = true;
     this.camCtrl.followPlanet = null;
     this.camCtrl.followComet = null;
     this.camCtrl.zoomActive = false;
     this.velocity.set(0, 0, 0);
-    this._debugTickIndex = 0;
-
-    // #region agent log
-    const _agentBeforeUwm = performance.now();
-    // #endregion
-    this.planetMesh.updateWorldMatrix(true, true);
-    // #region agent log
-    fetch("http://127.0.0.1:7420/ingest/78a6f2ec-47fb-4ea6-9cbc-d865eb7eaeff", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "297bb4" },
-      body: JSON.stringify({
-        sessionId: "297bb4",
-        location: "shard-flight-game.js:enter:afterUwm",
-        message: "after planetMesh.updateWorldMatrix(true,true)",
-        data: {
-          uwmMs: performance.now() - _agentBeforeUwm,
-          enterSoFarMs: performance.now() - _agentEnterT0,
-        },
-        timestamp: Date.now(),
-        hypothesisId: "H5",
-        runId: "pre-fix",
-      }),
-    }).catch(() => {});
-    // #endregion
-    this.planetMesh.getWorldPosition(_planetCenter);
-    const R = this.getPlanetRadius() + 1.85;
-
-    this.camera.getWorldDirection(_fwd);
-    _fwd.normalize();
-    this.ship.position.copy(_planetCenter).addScaledVector(_fwd, R);
-
-    this.aimWorld.copy(this.ship.position).addScaledVector(_fwd, 3);
-
-    this.scene.add(this.ship);
+    this._peakCamMove = 0;
+    this._setupFlightStartPose();
+    _prevCamPos.copy(this.camera.position);
+    this.flightLayer.add(this.ship);
     this.hud.setAimDotVisible(true);
     this.hud.hideGameOver();
-    // #region agent log
-    fetch("http://127.0.0.1:7420/ingest/78a6f2ec-47fb-4ea6-9cbc-d865eb7eaeff", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "297bb4" },
-      body: JSON.stringify({
-        sessionId: "297bb4",
-        location: "shard-flight-game.js:enter:end",
-        message: "enter end",
-        data: { totalEnterMs: performance.now() - _agentEnterT0 },
-        timestamp: Date.now(),
-        hypothesisId: "H5",
-        runId: "pre-fix",
-      }),
-    }).catch(() => {});
-    // #endregion
   }
 
-  /** @param {{ mesh: import('three').Mesh }} primaryPlanet */
   exit(primaryPlanet) {
     if (!this.active) return;
     this.active = false;
@@ -200,7 +217,7 @@ export default class ShardFlightGame {
     this.camCtrl.shardFlightMode = false;
     this.camCtrl.followPlanet = primaryPlanet;
     this.camCtrl.followComet = null;
-    this.scene.remove(this.ship);
+    this.flightLayer.remove(this.ship);
     this._disposeExplosion();
     this.hud.setAimDotVisible(false);
     this.hud.hideGameOver();
@@ -210,21 +227,18 @@ export default class ShardFlightGame {
     if (!this.active) return;
     this._disposeExplosion();
     this.gameOver = false;
+    this._flightEngaged = false;
     this.ship.visible = true;
     this.velocity.set(0, 0, 0);
-    this.planetMesh.getWorldPosition(_planetCenter);
-    const R = this.getPlanetRadius() + 1.85;
-    this.camera.getWorldDirection(_fwd);
-    _fwd.normalize();
-    this.ship.position.copy(_planetCenter).addScaledVector(_fwd, R);
-    this.ship.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), _fwd);
-    this.aimWorld.copy(this.ship.position).addScaledVector(_fwd, 3);
+    this._peakCamMove = 0;
+    this._setupFlightStartPose();
+    _prevCamPos.copy(this.camera.position);
     this.hud.hideGameOver();
   }
 
   _disposeExplosion() {
     if (!this._explosion) return;
-    this.scene.remove(this._explosion);
+    this.flightLayer.remove(this._explosion);
     this._explosion.geometry.dispose();
     const m = this._explosion.material;
     if (Array.isArray(m)) m.forEach((x) => x.dispose());
@@ -239,47 +253,46 @@ export default class ShardFlightGame {
     this.ship.visible = false;
     this._explosion = makeExplosionPoints();
     this._explosion.position.copy(this.ship.position);
-    this.scene.add(this._explosion);
+    this.flightLayer.add(this._explosion);
     this.hud.showGameOver();
   }
 
   _moveAim(dt) {
     const k = this.camCtrl.keys;
-    this.camera.getWorldDirection(_fwd);
-    _fwd.normalize();
-    _right.crossVectors(_fwd, _worldUp);
-    if (_right.lengthSq() < 1e-8) {
-      _right.set(1, 0, 0);
-    } else {
-      _right.normalize();
-    }
+    if (!k.w && !k.s && !k.a && !k.d) return;
+
+    this._cameraBasis();
     const sp = AIM_SPEED * dt;
-    if (k.w) this.aimWorld.y += sp;
-    if (k.s) this.aimWorld.y -= sp;
+    if (k.w) this.aimWorld.addScaledVector(_camUp, sp);
+    if (k.s) this.aimWorld.addScaledVector(_camUp, -sp);
     if (k.a) this.aimWorld.addScaledVector(_right, -sp);
     if (k.d) this.aimWorld.addScaledVector(_right, sp);
+
+    this._constrainAimAroundShip();
+    this._constrainAimToShell();
   }
 
   _integrateShip(dt) {
     _toAim.subVectors(this.aimWorld, this.ship.position);
     const dist = _toAim.length();
-    if (dist > 0.02) {
+    if (dist > 0.05) {
       _toAim.multiplyScalar(1 / dist);
       this.velocity.addScaledVector(_toAim, SHIP_ACCEL * dt);
-      const spd = this.velocity.length();
-      if (spd > SHIP_MAX_SPEED) {
-        this.velocity.multiplyScalar(SHIP_MAX_SPEED / spd);
-      }
-    } else {
-      this.velocity.multiplyScalar(Math.max(0, 1 - 3 * dt));
+    }
+    const drag = Math.exp(-SHIP_DRAG * dt);
+    this.velocity.multiplyScalar(drag);
+    const spd = this.velocity.length();
+    if (spd > SHIP_MAX_SPEED) {
+      this.velocity.multiplyScalar(SHIP_MAX_SPEED / spd);
     }
     this.ship.position.addScaledVector(this.velocity, dt);
-    if (dist > 0.05) {
+
+    if (dist > 0.08) {
       this.ship.lookAt(this.aimWorld);
     }
   }
 
-  _clampShell() {
+  _clampShipShell() {
     this.planetMesh.getWorldPosition(_planetCenter);
     const R = this.getPlanetRadius();
     _offset.subVectors(this.ship.position, _planetCenter);
@@ -289,47 +302,23 @@ export default class ShardFlightGame {
     if (d < minD && d > 1e-6) {
       _offset.multiplyScalar(minD / d);
       this.ship.position.copy(_planetCenter).add(_offset);
-      this.velocity.multiplyScalar(0.3);
+      this.velocity.multiplyScalar(0.25);
     } else if (d > maxD) {
       _offset.multiplyScalar(maxD / d);
       this.ship.position.copy(_planetCenter).add(_offset);
-      this.velocity.multiplyScalar(0.3);
+      this.velocity.multiplyScalar(0.25);
     }
   }
 
   _checkShardHit() {
     const shipPos = this.ship.position;
     let hit = false;
-    // #region agent log
-    const colliderStartMs =
-      this._debugTickIndex < 25 ? performance.now() : 0;
-    // #endregion
     this.pyramidField.forEachActiveShardCollider(({ centerWorld, radius }) => {
       if (hit) return;
       if (spheresOverlap(shipPos, SHIP_RADIUS, centerWorld, radius)) {
         hit = true;
       }
     });
-    // #region agent log
-    if (this._debugTickIndex < 25 && colliderStartMs) {
-      fetch("http://127.0.0.1:7420/ingest/78a6f2ec-47fb-4ea6-9cbc-d865eb7eaeff", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "297bb4" },
-        body: JSON.stringify({
-          sessionId: "297bb4",
-          location: "shard-flight-game.js:_checkShardHit",
-          message: "collider iteration",
-          data: {
-            idx: this._debugTickIndex,
-            colliderMs: performance.now() - colliderStartMs,
-          },
-          timestamp: Date.now(),
-          hypothesisId: "H2",
-          runId: "pre-fix",
-        }),
-      }).catch(() => {});
-    }
-    // #endregion
     if (hit) this._triggerGameOver();
   }
 
@@ -348,39 +337,75 @@ export default class ShardFlightGame {
     pos.needsUpdate = true;
     const m = /** @type {THREE.PointsMaterial} */ (pts.material);
     m.opacity = Math.max(0, 1 - pts.userData.t / EXPLODE_SEC);
-    if (pts.userData.t > EXPLODE_SEC) {
-      this._disposeExplosion();
-    }
-  }
-
-  _updateChaseCamera() {
-    const target = this.gameOver && this._explosion
-      ? this._explosion.position
-      : this.ship.position;
-    _offset.set(0, CAM_UP, CAM_BEHIND).applyQuaternion(this.ship.quaternion);
-    _camWant.copy(target).add(_offset);
-    this.camera.position.lerp(_camWant, CAM_LERP_POS);
-    _look.copy(target);
-    this.camera.lookAt(_look);
+    if (pts.userData.t > EXPLODE_SEC) this._disposeExplosion();
   }
 
   /**
-   * Call after `pyramidField.update` each frame while mode may be active.
-   * @param {number} dt
+   * Third-person chase: world-space offset opposite the ship→aim line (not ship local axes).
+   * Ship rotation is handled in {@link _integrateShip} only.
    */
+  _updateChaseCamera() {
+    _toAim.subVectors(this.aimWorld, this.ship.position);
+    const aimDist = _toAim.length();
+    if (aimDist < 1e-6) return;
+    _toAim.multiplyScalar(1 / aimDist);
+
+    _camWant.copy(this.ship.position).addScaledVector(_toAim, -CAM_BEHIND);
+    _camWant.y += CAM_UP;
+
+    this.camera.position.copy(_camWant);
+    this.camera.lookAt(this.aimWorld);
+  }
+
   update(dt) {
     if (!this.active) return;
 
     if (!this.gameOver) {
-      this._moveAim(dt);
-      this._integrateShip(dt);
-      this._clampShell();
-      this._checkShardHit();
+      if (this._steeringKeysDown() && !this._flightEngaged) {
+        this._flightEngaged = true;
+        this.velocity.set(0, 0, 0);
+      }
+
+      if (!this._flightEngaged) {
+        this._maintainEntryPose();
+      } else {
+        this._moveAim(dt);
+        this._integrateShip(dt);
+        this._constrainAimAroundShip();
+        this._clampShipShell();
+        this._checkShardHit();
+        this._updateChaseCamera();
+      }
     } else {
       this._updateExplosion(dt);
+      this._updateChaseCamera();
     }
 
     this.hud.syncAimDot(this.camera, this.aimWorld, this.container);
-    this._updateChaseCamera();
+    this._syncFlightTelemetry();
+  }
+
+  _syncFlightTelemetry() {
+    const cam = this.camera.position;
+    _camDelta.subVectors(cam, _prevCamPos);
+    const camMove = _camDelta.length();
+    this._peakCamMove = Math.max(this._peakCamMove, camMove);
+
+    this.planetMesh.getWorldPosition(_planetCenter);
+
+    this.hud.syncTelemetry({
+      camPos: cam,
+      camDelta: _camDelta,
+      camMove,
+      peakMove: this._peakCamMove,
+      distPlanet: cam.distanceTo(_planetCenter),
+      distShip: cam.distanceTo(this.ship.position),
+      distAim: cam.distanceTo(this.aimWorld),
+      shipPos: this.ship.position,
+      shipSpeed: this.velocity.length(),
+      flightEngaged: this._flightEngaged,
+    });
+
+    _prevCamPos.copy(cam);
   }
 }

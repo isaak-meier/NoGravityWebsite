@@ -1314,15 +1314,6 @@ function initScene() {
   let enterPlanetHudInside = false;
   (function tick() {
     requestAnimationFrame(tick);
-    const logShardFlightFrame =
-      camCtrl.shardFlightMode && shardFlight && shardFlight._debugTickIndex < 25;
-    let frameStartMs = 0;
-    let afterPrePyramidMs = 0;
-    let afterPyramidMs = 0;
-    let afterShardFlightMs = 0;
-    let afterCameraMs = 0;
-    let afterRenderMs = 0;
-    if (logShardFlightFrame) frameStartMs = performance.now();
     if (audioState.stream) audioState.stream.pump();
     const t = clock.getDelta();
     const audioTimeEarly =
@@ -1347,7 +1338,6 @@ function initScene() {
       cometDevInspectOnce = false;
       camCtrl.beginFollowComet(comet);
     }
-    if (logShardFlightFrame) afterPrePyramidMs = performance.now();
     const audioTime = audioTimeEarly;
     pyramidField.update(
       t,
@@ -1358,12 +1348,9 @@ function initScene() {
       },
       { mesh: sphere, radius: planetParams.radius },
     );
-    if (logShardFlightFrame) afterPyramidMs = performance.now();
     shardFlight?.update(t);
-    if (logShardFlightFrame) afterShardFlightMs = performance.now();
     camCtrl.update(t);
     planetSwitcher.syncActive();
-    if (logShardFlightFrame) afterCameraMs = performance.now();
     const insidePlanet = isCameraInsideAnyPlanet(camera.position, solarSystem.planets);
     if (insidePlanet !== enterPlanetHudInside) {
       enterPlanetHudInside = insidePlanet;
@@ -1380,34 +1367,6 @@ function initScene() {
     greenPlanetFadeHandles.setVisible(camCtrl.followPlanet === solarSystem.planets[2]);
     greenPlanetFadeHandles.update(t);
     composer.render();
-    if (logShardFlightFrame) {
-      afterRenderMs = performance.now();
-      // #region agent log
-      fetch("http://127.0.0.1:7420/ingest/78a6f2ec-47fb-4ea6-9cbc-d865eb7eaeff", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "297bb4" },
-        body: JSON.stringify({
-          sessionId: "297bb4",
-          location: "three-scene.js:tick",
-          message: "shard flight frame segments",
-          data: {
-            idx: shardFlight._debugTickIndex,
-            clockDelta: t,
-            prePyramidMs: afterPrePyramidMs - frameStartMs,
-            pyramidMs: afterPyramidMs - afterPrePyramidMs,
-            shardFlightMs: afterShardFlightMs - afterPyramidMs,
-            camCtrlMs: afterCameraMs - afterShardFlightMs,
-            hudAndRenderMs: afterRenderMs - afterCameraMs,
-            frameMs: afterRenderMs - frameStartMs,
-          },
-          timestamp: Date.now(),
-          hypothesisId: "H1",
-          runId: "pre-fix",
-        }),
-      }).catch(() => {});
-      // #endregion
-      shardFlight._debugTickIndex++;
-    }
   })();
 }
 
