@@ -523,7 +523,6 @@ export default class PyramidField {
       .name("Max Shatter");
     folder.add(this.config, "shatterAmount", 0, 1, 0.01).name("Shatter amount");
     folder.add(this.config, "patternMode", 0, 3, 1).name("Pattern (0–3)");
-    folder.open();
 
     const pat = this.config.pattern;
     const patternFolder = gui.addFolder("Shatter pattern");
@@ -555,7 +554,6 @@ export default class PyramidField {
       .name("Galaxy 3D height");
     patternFolder.add(pat, "galaxyVerticalWobbleTurns", 0.5, 8, 0.05)
       .name("Galaxy 3D wobble");
-    patternFolder.open();
 
     return folder;
   }

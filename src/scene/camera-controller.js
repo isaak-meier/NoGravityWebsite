@@ -59,6 +59,34 @@ const GRAPH_ZOOM_TWEEN_DURATION_SEC = 1.6;
 /** If |look-axis·worldY| exceeds this, skip upright look-at (near singularity over / under the pivot). */
 const ORBIT_ROLL_LOOKAT_SKIP_AXIS_Y = 0.986;
 
+/**
+ * Soft pole buffer. Every per-frame pitch input (orbit drag, shard-flight aim, desktop free cam)
+ * is multiplied by {@link poleBrake} so the camera direction asymptotically approaches but never
+ * reaches `±worldUp`. That keeps `lookAt` away from its `cross(forward, up) ≈ 0` singularity in
+ * every mode at once, replacing the per-mode hard clamps.
+ */
+export const POLE_BUFFER_EPSILON_RAD = (0.5 * Math.PI) / 180;
+/** Equivalent `|forward.y|` cap — the camera direction is held below this. */
+export const POLE_MAX_VERTICALITY = Math.cos(POLE_BUFFER_EPSILON_RAD);
+/** Higher = camera moves freely longer and brakes harder right before the pole. */
+const POLE_BRAKE_SHARPNESS = 8;
+
+/**
+ * Soft brake on pitch input near the world-up axis. Returns 1 when input would push the camera
+ * back toward the equator or when it's far from the pole; smoothly approaches 0 as the camera
+ * direction's `|y|` approaches {@link POLE_MAX_VERTICALITY} from below.
+ *
+ * @param {number} verticality signed current `dir.y` of the camera/aim direction (∈ [-1, 1]).
+ * @param {number} proposedDelta sign-meaningful intended change to `dir.y` if the input were
+ *   applied at full rate (only the sign matters; magnitude is fine to leave as the raw step).
+ * @returns {number} multiplier in [0, 1] to apply to the pitch input.
+ */
+export function poleBrake(verticality, proposedDelta) {
+  if (verticality * proposedDelta <= 0) return 1;
+  const ratio = Math.min(Math.abs(verticality) / POLE_MAX_VERTICALITY, 1);
+  return Math.max(0, 1 - ratio ** POLE_BRAKE_SHARPNESS);
+}
+
 const _worldUp = new THREE.Vector3(0, 1, 0);
 const _worldRight = new THREE.Vector3(1, 0, 0);
 const _zAxis = new THREE.Vector3(0, 0, 1);
@@ -614,7 +642,14 @@ class CameraController {
     const dir = graph ? this._graphOrbitDir : this._followOrbitDir;
 
     this._orbitScreenTangentBasis(this.camera, dir, _tRDrag, _tUDrag);
-    dir.applyAxisAngle(_tRDrag, -vert);
+    // Soft pole brake on the pitch component only. For a rotation around `_tRDrag` by angle θ,
+    // d(dir.y)/dθ = (_tRDrag × dir).y = _tRDrag.z·dir.x − _tRDrag.x·dir.z, so the sign of the
+    // proposed Δy is sign(pitchAngle · dyPerTheta). Yaw is left unbraked — near the pole only
+    // its meaning is ambiguous, not unstable.
+    const pitchAngle = -vert;
+    const dyPerTheta = _tRDrag.z * dir.x - _tRDrag.x * dir.z;
+    const brake = poleBrake(dir.y, pitchAngle * dyPerTheta);
+    dir.applyAxisAngle(_tRDrag, pitchAngle * brake);
     dir.applyAxisAngle(_tUDrag, -horiz);
     dir.normalize();
     this._syncOrbitAnglesFromDir(dir, graph);
@@ -870,7 +905,6 @@ class CameraController {
       this.zoomActive = true;
     });
     camFolder.add(this, "zoomSpeed", 0.005, 0.1).name("Zoom Speed");
-    camFolder.open();
   }
 
   /**
@@ -1446,7 +1480,12 @@ class CameraController {
       const applyDeadzone = (v) =>
         Math.abs(v) < deadzone ? 0 : (v - Math.sign(v) * deadzone) / (1 - deadzone);
       cam.rotation.y -= applyDeadzone(this.mouseX) * panSpeed * dt;
-      cam.rotation.x -= applyDeadzone(this.mouseY) * panSpeed * dt;
+      // Soft pole brake on pitch only. With YXZ Euler order, forward.y = sin(rotation.x) and
+      // d(forward.y)/d(rotation.x) = cos(rotation.x) ≥ 0 throughout (-π/2, π/2), so the sign of
+      // the proposed Δy equals sign(pitchInput).
+      const pitchInput = -applyDeadzone(this.mouseY) * panSpeed * dt;
+      const pitchBrake = poleBrake(Math.sin(cam.rotation.x), pitchInput);
+      cam.rotation.x += pitchInput * pitchBrake;
     }
   }
 }

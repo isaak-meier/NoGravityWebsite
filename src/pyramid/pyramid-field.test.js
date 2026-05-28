@@ -372,7 +372,7 @@ describe('PyramidField', () => {
       expect(addCalls).toContain('patternMode');
     });
 
-    it('opens the folder by default', () => {
+    it('leaves the folder collapsed (relies on the parent gui closeFolders default)', () => {
       const pf = new PyramidField({ count: 1 });
       const mockFolder = {
         add: vi.fn().mockReturnValue({ name: vi.fn().mockReturnValue({ onChange: vi.fn() }) }),
@@ -381,7 +381,7 @@ describe('PyramidField', () => {
       };
       const mockGui = { addFolder: vi.fn(() => mockFolder) };
       pf.setupGUI(mockGui);
-      expect(mockFolder.open).toHaveBeenCalled();
+      expect(mockFolder.open).not.toHaveBeenCalled();
     });
 
     it('returns the folder', () => {

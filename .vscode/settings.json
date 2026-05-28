@@ -1,13 +1,10 @@
 {
   "terminal.integrated.defaultProfile.windows": "Git Bash",
-  "terminal.integrated.cwd": "${workspaceFolder}",
   "terminal.integrated.profiles.windows": {
     "Git Bash": {
-      "path": "C:\\Program Files\\Git\\bin\\bash.exe",
-      "args": ["--login", "-i"],
-      "env": {
-        "CHERE_INVOKING": "1"
-      }
+      "path": "C:\\\Program Files\\\\Git\\\bin\\\bash.exe",
+      "args": ["--login", "-i"]
     }
-  }
+  },
+  "terminal.integrated.shell.windows": "C:\\\Program Files\\\\Git\\\bin\\\bash.exe"
 }

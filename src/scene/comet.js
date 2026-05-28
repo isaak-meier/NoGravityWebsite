@@ -333,7 +333,6 @@ export default class Comet {
     f.add(this, "speed", 0.02, 0.5, 0.01).name("Speed");
     f.add(this, "trailFadeRate", 0, 2.5, 0.02).name("Trail fade rate");
     f.add(this, "perihelionDistance", 20, 80, 1).name("Perihelion dist");
-    f.open();
     return f;
   }
 

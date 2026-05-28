@@ -1,43 +1,198 @@
 import * as THREE from "three";
 
 /**
+ * Vertical throttle lever pinned to the right edge of the viewport. Pointer-drag
+ * along the track sets the throttle 0..1; the value is reported via `onChange`
+ * so the game can wire it straight into its rocket integrator.
+ * @param {(value: number) => void} onChange
+ */
+function createThrottleControl(onChange) {
+  const root = document.createElement("div");
+  root.className = "shard-flight-throttle";
+  root.setAttribute("aria-label", "Shard flight throttle");
+
+  const label = document.createElement("div");
+  label.className = "shard-flight-throttle__label";
+  label.textContent = "Throttle";
+
+  const track = document.createElement("div");
+  track.className = "shard-flight-throttle__track";
+  track.setAttribute("role", "slider");
+  track.setAttribute("aria-valuemin", "0");
+  track.setAttribute("aria-valuemax", "100");
+  track.tabIndex = 0;
+
+  const fill = document.createElement("div");
+  fill.className = "shard-flight-throttle__fill";
+  const thumb = document.createElement("div");
+  thumb.className = "shard-flight-throttle__thumb";
+  track.appendChild(fill);
+  track.appendChild(thumb);
+
+  const readout = document.createElement("div");
+  readout.className = "shard-flight-throttle__value";
+  readout.textContent = "0%";
+
+  root.appendChild(label);
+  root.appendChild(track);
+  root.appendChild(readout);
+
+  let value = 0;
+  let dragging = false;
+  let activePointer = -1;
+
+  const setValue = (v) => {
+    value = Math.max(0, Math.min(1, v));
+    const pct = Math.round(value * 100);
+    fill.style.height = `${(value * 100).toFixed(1)}%`;
+    thumb.style.bottom = `${(value * 100).toFixed(1)}%`;
+    readout.textContent = `${pct}%`;
+    track.setAttribute("aria-valuenow", String(pct));
+    onChange(value);
+  };
+
+  const updateFromClientY = (clientY) => {
+    const rect = track.getBoundingClientRect();
+    if (rect.height <= 0) return;
+    setValue(1 - (clientY - rect.top) / rect.height);
+  };
+
+  track.addEventListener("pointerdown", (e) => {
+    dragging = true;
+    activePointer = e.pointerId;
+    try { track.setPointerCapture(e.pointerId); } catch { /* older browsers */ }
+    updateFromClientY(e.clientY);
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  track.addEventListener("pointermove", (e) => {
+    if (!dragging || e.pointerId !== activePointer) return;
+    updateFromClientY(e.clientY);
+    e.stopPropagation();
+  });
+  const endDrag = (e) => {
+    if (!dragging) return;
+    if (e.pointerId === activePointer) {
+      dragging = false;
+      activePointer = -1;
+      try { track.releasePointerCapture(e.pointerId); } catch { /* noop */ }
+    }
+  };
+  track.addEventListener("pointerup", endDrag);
+  track.addEventListener("pointercancel", endDrag);
+  track.addEventListener("pointerleave", (e) => {
+    if (dragging && e.pointerId === activePointer) {
+      // Keep the drag alive via pointer capture even if we leave the track box.
+    }
+  });
+  // Prevent the camera click-pick from picking up these as canvas clicks.
+  track.addEventListener("click", (e) => e.stopPropagation());
+
+  track.addEventListener("keydown", (e) => {
+    const step = e.shiftKey ? 0.2 : 0.05;
+    if (e.key === "ArrowUp" || e.key === "ArrowRight") {
+      setValue(value + step);
+      e.preventDefault();
+    } else if (e.key === "ArrowDown" || e.key === "ArrowLeft") {
+      setValue(value - step);
+      e.preventDefault();
+    } else if (e.key === "Home") {
+      setValue(0);
+      e.preventDefault();
+    } else if (e.key === "End") {
+      setValue(1);
+      e.preventDefault();
+    }
+  });
+
+  setValue(0);
+
+  return {
+    root,
+    setValue,
+    getValue: () => value,
+    /** True if the user's pointer is currently dragging the track (so click-to-boost ignores it). */
+    isDragging: () => dragging,
+    /** Forwarded by the parent so click-to-boost knows to skip events on the throttle UI. */
+    contains: (el) => root.contains(el),
+  };
+}
+
+/**
+ * Slim fuel/boost readout that shows under the throttle. Read by the game each frame.
+ */
+function createFuelGauge() {
+  const root = document.createElement("div");
+  root.className = "shard-flight-fuel";
+  root.setAttribute("aria-hidden", "true");
+  const label = document.createElement("div");
+  label.className = "shard-flight-fuel__label";
+  label.textContent = "Fuel";
+  const bar = document.createElement("div");
+  bar.className = "shard-flight-fuel__bar";
+  const fill = document.createElement("div");
+  fill.className = "shard-flight-fuel__fill";
+  bar.appendChild(fill);
+  root.appendChild(label);
+  root.appendChild(bar);
+  return {
+    root,
+    setFraction(f) {
+      const pct = Math.max(0, Math.min(1, f)) * 100;
+      fill.style.width = `${pct.toFixed(1)}%`;
+      fill.classList.toggle("shard-flight-fuel__fill--low", f < 0.18);
+    },
+  };
+}
+
+/**
  * @param {object} opts
  * @param {HTMLElement} opts.container
  * @param {boolean} opts.isMobile
  * @param {() => void} opts.onStartFlight
  * @param {() => void} opts.onRestart
  * @param {() => void} opts.onExitFlight
+ * @param {(throttle: number) => void} opts.onThrottleChange
+ * @param {() => void} opts.onBoost
  */
 export function createShardFlightHud(container, {
   isMobile,
   onStartFlight,
   onRestart,
   onExitFlight,
+  onThrottleChange,
+  onBoost,
 }) {
   const root = document.createElement("div");
   root.className = "shard-flight-hud";
 
+  const startLabel = "Shard flight";
+  const exitLabel = "Exit shard flight";
+  const startAria = "Start shard flight mini-game: third-person ship around the shard field";
+  const exitAria = "Exit shard flight mini-game";
+
+  let active = false;
+
   const startBtn = document.createElement("button");
   startBtn.type = "button";
   startBtn.className = "shard-flight-btn";
-  startBtn.textContent = "Shard flight";
-  startBtn.setAttribute(
-    "aria-label",
-    "Start shard flight mini-game: third-person ship around the shard field",
-  );
+  startBtn.textContent = startLabel;
+  startBtn.setAttribute("aria-label", startAria);
   if (isMobile) {
     startBtn.disabled = true;
     startBtn.title = "Shard flight is desktop only for now";
     startBtn.setAttribute("aria-disabled", "true");
   }
   startBtn.addEventListener("click", () => {
-    if (!startBtn.disabled) onStartFlight();
+    if (startBtn.disabled) return;
+    if (active) onExitFlight();
+    else onStartFlight();
   });
-  root.appendChild(startBtn);
 
   const hint = document.createElement("div");
   hint.className = "shard-flight-hud__hint";
-  hint.textContent = "W A S D moves the aim dot; fly into shards = game over";
+  hint.textContent =
+    "W A S D aims · click anywhere to fire boosters · drag the throttle to set thrust · shards = game over";
   hint.setAttribute("aria-hidden", "true");
   root.appendChild(hint);
 
@@ -45,6 +200,12 @@ export function createShardFlightHud(container, {
   aimDot.className = "shard-flight-hud__aim-dot";
   aimDot.setAttribute("aria-hidden", "true");
   container.appendChild(aimDot);
+
+  const throttle = createThrottleControl((v) => onThrottleChange?.(v));
+  container.appendChild(throttle.root);
+
+  const fuelGauge = createFuelGauge();
+  throttle.root.appendChild(fuelGauge.root);
 
   const gameOver = document.createElement("div");
   gameOver.className = "shard-flight-game-over";
@@ -77,66 +238,51 @@ export function createShardFlightHud(container, {
   gameOver.appendChild(btnRow);
   container.appendChild(gameOver);
 
-  const telemetry = document.createElement("div");
-  telemetry.className = "shard-flight-telemetry";
-  telemetry.setAttribute("aria-live", "off");
-  telemetry.style.display = "none";
-  const titleEl = document.createElement("div");
-  titleEl.className = "shard-flight-telemetry__title";
-  titleEl.textContent = "Flight camera";
-  telemetry.appendChild(titleEl);
-  const rowEls = {};
-  for (const key of ["pos", "delta", "dist", "ship", "peak"]) {
-    const row = document.createElement("div");
-    row.className = "shard-flight-telemetry__row";
-    row.dataset.row = key;
-    row.textContent = "—";
-    telemetry.appendChild(row);
-    rowEls[key] = row;
-  }
-  container.appendChild(telemetry);
-
   const _ndc = new THREE.Vector3();
 
-  const fmt = (n) => (Number.isFinite(n) ? n.toFixed(2) : "—");
-  const fmtSigned = (n) => {
-    if (!Number.isFinite(n)) return "—";
-    const s = n >= 0 ? "+" : "";
-    return s + n.toFixed(2);
+  // Click-to-boost: any pointerdown on the canvas/container that isn't on an interactive
+  // HUD element triggers the boosters. We attach to `container` rather than the canvas
+  // directly so the existing camera-controller click handler (which is also on the
+  // container but already short-circuits while shardFlightMode is on) doesn't fight us.
+  const isInteractiveTarget = (target) => {
+    if (!(target instanceof Element)) return false;
+    if (throttle.contains(target)) return true;
+    if (gameOver.contains(target)) return true;
+    if (target.closest("button, input, select, textarea, [data-shard-flight-ignore-boost]")) {
+      return true;
+    }
+    if (target.closest(".shard-flight-hud, .planet-switcher-hud, .enter-planet-hud, .camera-distance-hud, .bottom-left-hud, .auth-ui, .planet-interior-hud, .planet-mailing-panel")) {
+      return true;
+    }
+    return false;
   };
+
+  const handleBoostPointer = (e) => {
+    if (!active) return;
+    if (e.button !== undefined && e.button !== 0) return; // primary mouse only
+    if (isInteractiveTarget(e.target)) return;
+    if (throttle.isDragging()) return;
+    onBoost?.();
+  };
+  container.addEventListener("pointerdown", handleBoostPointer);
 
   return {
     root,
+    /** The caller is responsible for placing this in the DOM (e.g. alongside other corner controls). */
+    flightButton: startBtn,
     setAimDotVisible(v) {
       aimDot.style.display = v ? "block" : "none";
       hint.style.display = v && !isMobile ? "block" : "none";
-      telemetry.style.display = v ? "block" : "none";
+      active = v;
+      startBtn.textContent = v ? exitLabel : startLabel;
+      startBtn.setAttribute("aria-label", v ? exitAria : startAria);
     },
-    /**
-     * @param {object} t
-     * @param {import('three').Vector3} t.camPos
-     * @param {import('three').Vector3} t.camDelta
-     * @param {number} t.camMove
-     * @param {number} t.peakMove
-     * @param {number} t.distPlanet
-     * @param {number} t.distShip
-     * @param {number} t.distAim
-     * @param {import('three').Vector3} t.shipPos
-     * @param {number} t.shipSpeed
-     * @param {boolean} t.flightEngaged
-     */
-    syncTelemetry(t) {
-      if (telemetry.style.display === "none") return;
-      rowEls.pos.textContent =
-        `pos  x ${fmt(t.camPos.x)}  y ${fmt(t.camPos.y)}  z ${fmt(t.camPos.z)}`;
-      rowEls.delta.textContent =
-        `Δfr  x ${fmtSigned(t.camDelta.x)}  y ${fmtSigned(t.camDelta.y)}  z ${fmtSigned(t.camDelta.z)}  |Δ| ${fmt(t.camMove)}`;
-      rowEls.dist.textContent =
-        `dist planet ${fmt(t.distPlanet)}  ship ${fmt(t.distShip)}  aim ${fmt(t.distAim)}`;
-      rowEls.ship.textContent =
-        `ship x ${fmt(t.shipPos.x)}  y ${fmt(t.shipPos.y)}  z ${fmt(t.shipPos.z)}  spd ${fmt(t.shipSpeed)}`;
-      rowEls.peak.textContent =
-        `peak |Δ| ${fmt(t.peakMove)}  mode ${t.flightEngaged ? "chase" : "entry"}`;
+    setThrottleVisible(v) {
+      throttle.root.classList.toggle("shard-flight-throttle--visible", !!v);
+      if (!v) throttle.setValue(0);
+    },
+    setFuelFraction(f) {
+      fuelGauge.setFraction(f);
     },
     /**
      * @param {import('three').Camera} camera
@@ -145,13 +291,7 @@ export function createShardFlightHud(container, {
      */
     syncAimDot(camera, aimWorld, el) {
       if (aimDot.style.display === "none") return;
-      camera.updateMatrixWorld();
       _ndc.copy(aimWorld).project(camera);
-      if (_ndc.z > 1) {
-        aimDot.style.visibility = "hidden";
-        return;
-      }
-      aimDot.style.visibility = "visible";
       const rect = el.getBoundingClientRect();
       const x = ((_ndc.x + 1) / 2) * rect.width + rect.left;
       const y = ((-_ndc.y + 1) / 2) * rect.height + rect.top;

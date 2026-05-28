@@ -1055,7 +1055,6 @@ class SolarSystem {
       this.setPlanetSpacing(v);
       if (typeof onChange === "function") onChange(v);
     });
-    folder.open();
     this._setupGreenPlanetGUI(gui);
   }
 
@@ -1073,7 +1072,6 @@ class SolarSystem {
       folder.addColor(green.fade.uniforms.uColors.value, i).name(entry.name);
     });
     folder.add(green.fade.uniforms.uSoftness, "value", 0.5, 8, 0.1).name("Softness");
-    folder.open();
   }
 
   /**
