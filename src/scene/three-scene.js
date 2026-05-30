@@ -620,6 +620,8 @@ function createAudioState() {
     fft: null,
     audioEl: null,
     _liveStream: null,
+    /** Set when page hides while audio is playing; cleared after resume or stop. */
+    _resumePlaybackWhenVisible: false,
     /** @type {'idle' | 'loading' | 'error' | 'ready'} */
     _musicLoadPhase: "idle",
     _musicLoadOffline: false,
@@ -628,7 +630,75 @@ function createAudioState() {
   };
 }
 
+/** @param {ReturnType<typeof createAudioState>} audioState */
+function isAudioPlaybackActive(audioState) {
+  if (audioState._liveStream) return !!audioState.stream;
+  return !!audioState.audioEl && !audioState.audioEl.paused;
+}
+
+/** @param {ReturnType<typeof createAudioState>} audioState */
+function pauseAudioForPageHidden(audioState) {
+  if (!isAudioPlaybackActive(audioState)) {
+    audioState._resumePlaybackWhenVisible = false;
+    return;
+  }
+  audioState._resumePlaybackWhenVisible = true;
+  if (audioState.audioEl) {
+    try {
+      audioState.audioEl.pause();
+    } catch (_) {}
+  }
+  if (audioState.stream) audioState.stream.stop();
+}
+
+/** @param {ReturnType<typeof createAudioState>} audioState */
+async function resumeAudioForPageVisible(audioState) {
+  if (!audioState._resumePlaybackWhenVisible) return;
+  audioState._resumePlaybackWhenVisible = false;
+  if (audioState.fft?.context?.state === "suspended") {
+    try {
+      await audioState.fft.context.resume();
+    } catch (err) {
+      console.warn("AudioContext resume after visibility failed:", err);
+    }
+  }
+  if (audioState.audioEl) {
+    try {
+      await audioState.audioEl.play();
+    } catch (err) {
+      console.warn("Audio resume after visibility failed:", err);
+      return;
+    }
+  }
+  if (audioState.stream) audioState.stream.start();
+}
+
+/**
+ * Pause file/live playback when the tab or in-app browser is hidden; restore if it was playing.
+ * @param {ReturnType<typeof createAudioState>} audioState
+ * @param {() => void} [onPlaybackChange] - e.g. sync music/mic toggles
+ * @returns {() => void} remove visibility listener
+ */
+function setupAudioVisibilityHandling(audioState, onPlaybackChange) {
+  if (typeof document === "undefined") return () => {};
+
+  const onVisibilityChange = () => {
+    if (document.hidden) {
+      pauseAudioForPageHidden(audioState);
+      onPlaybackChange?.();
+      return;
+    }
+    void resumeAudioForPageVisible(audioState).then(() => {
+      onPlaybackChange?.();
+    });
+  };
+
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+}
+
 function stopAudio(audioState) {
+  audioState._resumePlaybackWhenVisible = false;
   if (audioState.stream) {
     audioState.stream.stop();
     audioState.stream = null;
@@ -1141,6 +1211,7 @@ function initScene() {
     cockpit.syncMusicToggle();
     cockpit.syncMicToggle();
   };
+  setupAudioVisibilityHandling(audioState, syncMusicUi);
   const songPicker = setupSongPicker(
     controlsHost,
     audioState,
@@ -1231,6 +1302,14 @@ function initScene() {
     onThrottleRelease: () => {
       shardFlight?.setThrottlePressed(false);
     },
+    onBattleToggle: () => {
+      if (!shardFlight?.active) return;
+      if (shardFlight.isBattleMode()) shardFlight.exitBattleMode();
+      else shardFlight.enterBattleMode();
+    },
+    onBattleShipSizeChange: (hullScale) => {
+      shardFlight?.setBattleShipHullScale(hullScale);
+    },
   });
   container.appendChild(shardFlightHud.root);
 
@@ -1241,8 +1320,25 @@ function initScene() {
     pyramidField,
     planetMesh: sphere,
     getPlanetRadius: () => planetParams.radius,
+    bluePlanet: solarSystem.planets[0],
+    landingPlanet: solarSystem.planets[0],
+    onLandingComplete: (detail) => {
+      const landedShip = shardFlight?.ship;
+      shardFlight?.exit(primary, { retainShip: true });
+      if (detail?.planet?.mesh && landedShip) {
+        camCtrl.snapToLandedShipView(
+          detail.planet,
+          landedShip,
+          detail.surfaceNormal,
+          detail.shipVisualScale,
+        );
+      } else {
+        camCtrl.lockToPlanetWithoutIntro(solarSystem.planets[0]);
+      }
+    },
     container,
     hud: shardFlightHud,
+    onHubSpinPausedChange: (paused) => solarSystem.setPrimaryHubSpinPaused(paused),
   });
   tryStartShardFlight();
 
@@ -1481,6 +1577,10 @@ export {
   applyPlanetBrightnessFromBloomDial,
   applySpectrumToParams,
   createAudioState,
+  isAudioPlaybackActive,
+  pauseAudioForPageHidden,
+  resumeAudioForPageVisible,
+  setupAudioVisibilityHandling,
   stopAudio,
   toggleAudioPlayback,
   createAudioElement,

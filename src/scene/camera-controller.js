@@ -1,4 +1,10 @@
 import * as THREE from "three";
+import {
+  computeHorizonShipCameraPosition,
+  LANDED_HORIZON_CAM_SIDE,
+  LANDED_HORIZON_CAM_LIFT,
+  LANDED_ORBIT_DISTANCE_MULT,
+} from "./landed-ship-camera.js";
 
 /** Pixels of single-finger movement before we treat touchend as a drag, not a tap. */
 const TOUCH_TAP_MOVE_THRESHOLD_PX = 22;
@@ -200,6 +206,12 @@ class CameraController {
      * @type {boolean}
      */
     this.shardFlightMode = false;
+    /** When true, orbit/zoom pivot is the landed ship (not the planet center). */
+    this._landedShipViewActive = false;
+    this._landedShipLookTarget = new THREE.Vector3();
+    /** @type {import('three').Object3D | null} */
+    this._landedShipPivot = null;
+    this._landedShipVisualScale = 1;
     this.mouseLookEnabled = true;
     this.sun = null;
     this.sunLight = null;
@@ -348,7 +360,10 @@ class CameraController {
             Math.max(FOLLOW_ORBIT_ZOOM_MIN, minBySurface),
             FOLLOW_ORBIT_ZOOM_MAX
           );
-          if (this._currentFollowOrbitDistance() >= GRAPH_MODE_DISTANCE_THRESHOLD) {
+          if (
+            !this._landedShipViewActive
+            && this._currentFollowOrbitDistance() >= GRAPH_MODE_DISTANCE_THRESHOLD
+          ) {
             this._enterGraphMode();
           }
           return;
@@ -521,7 +536,19 @@ class CameraController {
    * World-space pivot for follow / graph orbit drag (planet center, comet head, or graph centroid).
    * @param {import("three").Vector3} out
    */
+  /**
+   * @param {import('three').Vector3} out
+   * @returns {boolean} true when the landed-ship pivot is active
+   */
+  _fillLandedShipOrbitCenter(out) {
+    if (!this._landedShipViewActive || !this._landedShipPivot) return false;
+    this._landedShipPivot.getWorldPosition(out);
+    this._landedShipLookTarget.copy(out);
+    return true;
+  }
+
   _fillOrbitPivotForDrag(out) {
+    if (this._fillLandedShipOrbitCenter(out)) return;
     if (this._graphMode) {
       const t = this._lastFollowedPlanetForGraph;
       if (t?.mesh) {
@@ -864,6 +891,8 @@ class CameraController {
    */
   lockToPlanetWithoutIntro(planet) {
     if (!planet?.mesh) return;
+    this._landedShipViewActive = false;
+    this._landedShipPivot = null;
     this._leaveGraphModeForExplicitSwitch();
     this._enterPlanetTween = null;
     this._enterPlanetInteriorHold = false;
@@ -880,7 +909,58 @@ class CameraController {
     this._lastFollowPlanet = planet;
   }
 
+  /**
+   * After shard-flight landing: orbit pivot is the ship; wheel/drag match planet follow.
+   * @param {{ mesh: import('three').Object3D }} planet — kept for picks / graph restore
+   * @param {import('three').Object3D} shipPivot — landed ship (world position updated each frame)
+   * @param {import('three').Vector3} surfaceNormal — outward from the planet at the pad
+   * @param {number} [shipVisualScale] — hull scale on the pad; scales camera offset + zoom floor
+   */
+  snapToLandedShipView(planet, shipPivot, surfaceNormal, shipVisualScale = 1) {
+    if (!planet?.mesh || !shipPivot) return;
+    this._leaveGraphModeForExplicitSwitch();
+    this._enterPlanetTween = null;
+    this._enterPlanetInteriorHold = false;
+    this.followComet = null;
+    this.followPlanet = planet;
+    this._introOrbitActive = false;
+    this._introOrbitElapsed = 0;
+    this.zoomActive = false;
+    this._landedShipPivot = shipPivot;
+    this._landedShipVisualScale = shipVisualScale > 1e-8 ? shipVisualScale : 1;
+    this._landedShipViewActive = true;
+    shipPivot.updateWorldMatrix(true, true);
+    shipPivot.getWorldPosition(this._landedShipLookTarget);
+    const scaleComp = this._landedShipVisualScale;
+    computeHorizonShipCameraPosition(
+      this._landedShipLookTarget,
+      surfaceNormal,
+      this.camera.position,
+      LANDED_HORIZON_CAM_SIDE * scaleComp,
+      LANDED_HORIZON_CAM_LIFT * scaleComp,
+    );
+    this.camera.lookAt(this._landedShipLookTarget);
+    this._followOrbitDir.subVectors(this.camera.position, this._landedShipLookTarget);
+    if (this._followOrbitDir.lengthSq() < 1e-10) {
+      this._followOrbitDir.set(0, 1, 0);
+    } else {
+      this._followOrbitDir.normalize();
+    }
+    this._followOrbitYaw = Math.atan2(this._followOrbitDir.x, this._followOrbitDir.z);
+    this._followOrbitPitch = Math.acos(
+      THREE.MathUtils.clamp(this._followOrbitDir.y, -1, 1),
+    );
+    this._syncFollowOrbitScaleFromCameraPosition();
+    this._followDistanceScale = Math.min(
+      FOLLOW_ORBIT_ZOOM_MAX,
+      this._followDistanceScale * LANDED_ORBIT_DISTANCE_MULT,
+    );
+    this._lastFollowPlanet = planet;
+  }
+
   beginFollowComet(comet) {
+    this._landedShipViewActive = false;
+    this._landedShipPivot = null;
     this._leaveGraphModeForExplicitSwitch();
     this._enterPlanetTween = null;
     this._enterPlanetInteriorHold = false;
@@ -1263,6 +1343,8 @@ class CameraController {
     }
     this._ensureFollowLocked();
     if (this.followPlanet !== this._lastFollowPlanet) {
+      this._landedShipViewActive = false;
+      this._landedShipPivot = null;
       if (this._lastFollowPlanet && !this.followPlanet) {
         this.mouseX = 0;
         this.mouseY = 0;
@@ -1347,6 +1429,10 @@ class CameraController {
     const offsetY = this.isMobile ? 8 : 5;
     const offsetZ = this.isMobile ? 20 : 12;
     const baseR = Math.hypot(offsetY, offsetZ);
+    if (this._landedShipViewActive) {
+      const shipPad = Math.max(0.05, this._landedShipVisualScale * 2.2);
+      return shipPad / baseR;
+    }
     const worldR = this._getFollowOrbitTargetWorldRadius();
     return (worldR + FOLLOW_ORBIT_SURFACE_MARGIN) / baseR;
   }
@@ -1371,7 +1457,9 @@ class CameraController {
   /** Sets `_followDistanceScale` from current camera distance to the active follow target (planet or comet). */
   _syncFollowOrbitScaleFromCameraPosition() {
     const orbitCenter = new THREE.Vector3();
-    if (this.followComet) {
+    if (this._fillLandedShipOrbitCenter(orbitCenter)) {
+      // landed ship pivot
+    } else if (this.followComet) {
       this.followComet.getHeadWorldPosition(orbitCenter);
     } else if (this.followPlanet?.mesh) {
       this.followPlanet.mesh.getWorldPosition(orbitCenter);
@@ -1399,12 +1487,14 @@ class CameraController {
   _updateFollow(dt) {
     const cam = this.camera;
     const orbitCenter = new THREE.Vector3();
-    if (this.followComet) {
-      this.followComet.getHeadWorldPosition(orbitCenter);
-    } else if (this.followPlanet?.mesh) {
-      this.followPlanet.mesh.getWorldPosition(orbitCenter);
-    } else {
-      return;
+    if (!this._fillLandedShipOrbitCenter(orbitCenter)) {
+      if (this.followComet) {
+        this.followComet.getHeadWorldPosition(orbitCenter);
+      } else if (this.followPlanet?.mesh) {
+        this.followPlanet.mesh.getWorldPosition(orbitCenter);
+      } else {
+        return;
+      }
     }
     if (this._enterPlanetInteriorHold) {
       cam.lookAt(orbitCenter);
@@ -1449,26 +1539,6 @@ class CameraController {
     cam.getWorldDirection(forward);
     const right = new THREE.Vector3().crossVectors(forward, cam.up).normalize();
     const speed = this.moveSpeed * dt;
-    // #region agent log
-    if (this.keys.w || this.keys.a || this.keys.s || this.keys.d) {
-      fetch("http://127.0.0.1:7420/ingest/78a6f2ec-47fb-4ea6-9cbc-d865eb7eaeff", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "a9743c" },
-        body: JSON.stringify({
-          sessionId: "a9743c",
-          hypothesisId: "H3",
-          location: "camera-controller.js:_updateFreeCamera",
-          message: "free-cam WASD ran",
-          data: {
-            shardFlightMode: this.shardFlightMode,
-            speed,
-            keys: { w: this.keys.w, a: this.keys.a, s: this.keys.s, d: this.keys.d },
-          },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-    }
-    // #endregion
     if (this.keys.w) cam.position.addScaledVector(forward, speed);
     if (this.keys.s) cam.position.addScaledVector(forward, -speed);
     if (this.keys.a) cam.position.addScaledVector(right, -speed);

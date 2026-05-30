@@ -485,6 +485,15 @@ describe('PyramidField', () => {
       expect(pf._shards.some((_, i) => pf._shatter.isShattered(i))).toBe(true);
     });
 
+    it('prepareRingPatternForBattle shatters into ring and holds pattern pose', () => {
+      const pf = new PyramidField({ count: 8, shatterAmount: 0.9 });
+      pf.prepareRingPatternForBattle();
+      expect(pf.config.patternMode).toBe(PATTERN_RING);
+      expect(pf._patternCoordinator.patternId).toBe(PATTERN_RING);
+      expect(pf._patternCoordinator.finalized).toBe(true);
+      expect(pf._shards.some((_, i) => pf._shatter.isShattered(i))).toBe(true);
+    });
+
     it('triggerManualShatter does nothing when shatterSubsystemEnabled is false', () => {
       const pf = new PyramidField({ count: 8, shatterAmount: 0.9 });
       pf.config.shatterSubsystemEnabled = false;

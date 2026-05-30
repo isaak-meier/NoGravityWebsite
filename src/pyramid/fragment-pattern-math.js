@@ -10,6 +10,13 @@ export const PATTERN_GALAXY = 2;
 /** No field layout: burst + drift only (ShardShatter treats this as non-pattern). */
 export const PATTERN_DRIFT = 3;
 
+/** Default {@link ringPosition} band radii as multiples of pattern `orbitRadius`. */
+export const RING_PATTERN_BAND_FRACS = [0.72, 0.88, 1.05, 1.22, 1.38];
+/** Innermost band — battle spawn sits inside this radius. */
+export const RING_PATTERN_INNER_BAND_FRAC = RING_PATTERN_BAND_FRACS[0];
+/** Outermost band — battle arena outer fence. */
+export const RING_PATTERN_OUTER_BAND_FRAC = RING_PATTERN_BAND_FRACS[4];
+
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
 /** @param {number} n
@@ -116,7 +123,7 @@ function ringPosition(out, g, n, cx, cy, cz, seed, params) {
   const orbit = params.orbitRadius ?? 1.46;
   const ringScale = params.ringRadiusScale ?? 1;
   /** Relative radii — gaps between bands read as Saturn-like divisions */
-  const bands = params.ringBands ?? [0.72, 0.88, 1.05, 1.22, 1.38];
+  const bands = params.ringBands ?? RING_PATTERN_BAND_FRACS;
   const R = bands.map(b => orbit * b * ringScale);
   const jAzK = params.ringAzimuthJitter ?? 0.14;
   const jRadK = params.ringRadialJitter ?? 0.045;

@@ -15,6 +15,7 @@ const _up = new THREE.Vector3(0, 1, 0);
 const _scratchVertex = new THREE.Vector3();
 const _planetCenterWorld = new THREE.Vector3();
 const _colliderWorld = new THREE.Vector3();
+const _anchorSum = new THREE.Vector3();
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 /** Epsilon for "fully inside" sphere test (world units). */
 const INSIDE_PLANET_EPS = 1e-4;
@@ -139,7 +140,41 @@ export default class PyramidField {
     this._hudBarIndex = 0;
     /** Set when `update` receives `musicClock` from the scene (file / live timing). */
     this._hasMusicClock = false;
+    /** When true, shard orbits / shatter / breathing do not advance (battle mode). */
+    this._simulationPaused = false;
     this.rebuild();
+  }
+
+  /** Freeze or resume shard-field motion (e.g. shard-flight battle mode). */
+  setSimulationPaused(paused) {
+    this._simulationPaused = !!paused;
+  }
+
+  /**
+   * Shatter the field into the ring pattern and hold fragments at the formed pose (battle mode).
+   * Call while simulation is still running; then {@link setSimulationPaused}(true) to freeze.
+   */
+  prepareRingPatternForBattle() {
+    if (!this.config.shatterSubsystemEnabled || !this._shatter) return;
+    if (this.config.shatterAmount <= 0) return;
+
+    this.config.patternMode = PATTERN_RING;
+    this.config.holdPatternPhase = true;
+    this._shatter.holdPatternPhase = true;
+
+    const t01 = (Math.sin(this._orbitTime) + 1) * 0.5;
+    const r = this._orbitMin + (this._orbitMax - this._orbitMin) * t01;
+    this._updateShardPositions(r, 0);
+    this.group.updateWorldMatrix(true, true);
+
+    this._triggerShatter();
+    this._shatter.snapAllToPatternPhase();
+    this._restoreShardVisibilityAfterShatter();
+    this.group.updateWorldMatrix(true, true);
+  }
+
+  get simulationPaused() {
+    return this._simulationPaused;
   }
 
   rebuild() {
@@ -239,6 +274,8 @@ export default class PyramidField {
    * @param {{ mesh: import("three").Mesh, radius: number } | null} [planetCtx] — when set, pyramids that lie fully inside this sphere become invisible permanently
    */
   update(deltaTime, musicClock = null, planetCtx = null) {
+    if (this._simulationPaused) return;
+
     const prevBpm = this._bpm;
     if (musicClock != null) {
       this._hasMusicClock = true;
@@ -558,6 +595,60 @@ export default class PyramidField {
     return folder;
   }
 
+  /** Mean collider radius for battle (fragments when shattered; matches {@link forEachBattleShardCollider}). */
+  estimateAverageShardColliderRadius() {
+    let sum = 0;
+    let n = 0;
+    this.forEachBattleShardCollider(({ radius }) => {
+      sum += radius;
+      n += 1;
+    });
+    if (n === 0) {
+      const s = this.config.size;
+      return Math.hypot(s * 0.5, s * 0.4);
+    }
+    return sum / n;
+  }
+
+  /**
+   * @param {(index: number, centerWorld: import('three').Vector3) => void} fn — `centerWorld` is reused; copy if needed.
+   */
+  forEachVisibleShardWorld(fn) {
+    this.group.updateWorldMatrix(true, false);
+    for (let i = 0; i < this._shards.length; i++) {
+      const shard = this._shards[i];
+      if (shard.hiddenInside) continue;
+      shard.mesh.getWorldPosition(_colliderWorld);
+      fn(i, _colliderWorld);
+    }
+  }
+
+  /**
+   * One world anchor per pyramid shard (fragment centroid when shattered).
+   * @param {(index: number, centerWorld: import('three').Vector3) => void} fn — `centerWorld` is reused; copy if needed.
+   */
+  forEachShardSpawnAnchor(fn) {
+    this.group.updateWorldMatrix(true, false);
+    for (let i = 0; i < this._shards.length; i++) {
+      const shard = this._shards[i];
+      if (shard.hiddenInside) continue;
+      if (this._shatter?.isShattered(i)) {
+        let n = 0;
+        _anchorSum.set(0, 0, 0);
+        this._shatter.forEachShardFragmentWorldCollider(i, ({ centerWorld }) => {
+          _anchorSum.add(centerWorld);
+          n += 1;
+        });
+        if (n === 0) continue;
+        _colliderWorld.copy(_anchorSum).multiplyScalar(1 / n);
+        fn(i, _colliderWorld);
+      } else {
+        shard.mesh.getWorldPosition(_colliderWorld);
+        fn(i, _colliderWorld);
+      }
+    }
+  }
+
   /**
    * World-space bounding spheres for shard collision (cone proxy; larger when mid-shatter).
    * @param {(o: { index: number, centerWorld: import('three').Vector3, radius: number }) => void} fn — `centerWorld` is reused; copy before async use.
@@ -580,6 +671,41 @@ export default class PyramidField {
       const shattered = this._shatter.isShattered(i);
       const radius = shattered ? localR * shatteredInflate : localR;
       fn({ index: i, centerWorld: _colliderWorld, radius });
+    }
+  }
+
+  /**
+   * Battle / shard-flight: intact shards use the mesh cone; shattered shards use each
+   * fragment's live world position (not the hidden mesh + inflated proxy).
+   * @param {(o: { index: number, centerWorld: import('three').Vector3, radius: number, fragmentIndex?: number }) => void} fn — `centerWorld` is reused; copy if needed.
+   */
+  forEachBattleShardCollider(fn) {
+    if (!this._shatter) {
+      this.forEachActiveShardCollider(fn);
+      return;
+    }
+    this.group.updateWorldMatrix(true, false);
+    const baseSize = this.config.size;
+    for (let i = 0; i < this._shards.length; i++) {
+      const shard = this._shards[i];
+      if (shard.hiddenInside) continue;
+      if (this._shatter.isShattered(i)) {
+        this._shatter.forEachShardFragmentWorldCollider(
+          i,
+          ({ centerWorld, radius, fragmentIndex }) => {
+            fn({ index: i, centerWorld, radius, fragmentIndex });
+          },
+        );
+        continue;
+      }
+      const m = shard.mesh;
+      m.updateWorldMatrix(false, false);
+      m.getWorldPosition(_colliderWorld);
+      const sm = m.scale.x;
+      const h = baseSize * sm;
+      const br = baseSize * 0.4 * sm;
+      const localR = Math.hypot(h * 0.5, br);
+      fn({ index: i, centerWorld: _colliderWorld, radius: localR });
     }
   }
 

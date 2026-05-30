@@ -958,6 +958,21 @@ class SolarSystem {
     this._redPlanetHalves = new PlanetHalvesEffect(this.planets[RED_PLANET_INDEX]);
     /** Re-opens after a non-beat frame so each onset triggers at most one bounce. */
     this._redPlanetBeatGateOpen = true;
+    /** Battle / frozen hub: hold blue mesh Y spin at the captured angle. */
+    this._primaryHubSpinPaused = false;
+    this._primaryHubMeshSpinY = 0;
+  }
+
+  /**
+   * Freeze or resume Y rotation on the blue hub mesh (shard-flight battle).
+   * @param {boolean} paused
+   */
+  setPrimaryHubSpinPaused(paused) {
+    this._primaryHubSpinPaused = !!paused;
+    const mesh = this.planets[0]?.mesh;
+    if (mesh && paused) {
+      this._primaryHubMeshSpinY = mesh.rotation.y;
+    }
   }
 
   get primary() {
@@ -1136,9 +1151,14 @@ class SolarSystem {
   }
 
   update(dt) {
-    for (const p of this.planets) {
+    for (let i = 0; i < this.planets.length; i++) {
+      const p = this.planets[i];
       // p.pivot.rotation.y += dt * p.def.speed; // Orbit disabled
-      p.mesh.rotation.y += dt * 0.2;
+      if (i === 0 && this._primaryHubSpinPaused) {
+        p.mesh.rotation.y = this._primaryHubMeshSpinY;
+      } else {
+        p.mesh.rotation.y += dt * 0.2;
+      }
       // No mesh.rotation.x — pyramid field (child of primary planet) would tumble off-axis; keep spin Y-only for comfort.
       if (p.goopMaterial?.uniforms?.uTime) {
         p.goopMaterial.uniforms.uTime.value += dt;
