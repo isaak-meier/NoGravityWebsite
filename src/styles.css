@@ -685,18 +685,54 @@ html, body {
   display: none;
 }
 
-.shard-flight-hud__aim-dot {
+.shard-flight-hud__crosshair {
   position: fixed;
-  width: 10px;
-  height: 10px;
-  margin-left: -5px;
-  margin-top: -5px;
-  border-radius: 50%;
-  background: rgba(34, 211, 238, 0.95);
-  box-shadow: 0 0 14px rgba(34, 211, 238, 0.85);
+  width: 32px;
+  height: 32px;
+  margin-left: -16px;
+  margin-top: -16px;
   pointer-events: none;
   z-index: 25;
   display: none;
+}
+
+.shard-flight-hud__crosshair-arm {
+  position: absolute;
+  background: rgba(34, 211, 238, 0.95);
+  box-shadow: 0 0 10px rgba(34, 211, 238, 0.75);
+  border-radius: 1px;
+}
+
+.shard-flight-hud__crosshair-arm--n,
+.shard-flight-hud__crosshair-arm--s {
+  left: 50%;
+  width: 2px;
+  height: 11px;
+  transform: translateX(-50%);
+}
+
+.shard-flight-hud__crosshair-arm--n {
+  top: 0;
+}
+
+.shard-flight-hud__crosshair-arm--s {
+  bottom: 0;
+}
+
+.shard-flight-hud__crosshair-arm--e,
+.shard-flight-hud__crosshair-arm--w {
+  top: 50%;
+  height: 2px;
+  width: 11px;
+  transform: translateY(-50%);
+}
+
+.shard-flight-hud__crosshair-arm--e {
+  right: 0;
+}
+
+.shard-flight-hud__crosshair-arm--w {
+  left: 0;
 }
 
 /* Shard flight — right-side throttle lever + fuel gauge (visible during flight only) */
@@ -900,6 +936,148 @@ html, body {
     height: 170px;
     width: 20px;
   }
+}
+
+/* Shard flight — live Newton II readout (a = F / m) mirrored on the left edge. */
+.shard-flight-newton {
+  position: absolute;
+  left: calc(16px + env(safe-area-inset-left, 0px));
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 22;
+  pointer-events: none;
+  display: none;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 12px 14px;
+  min-width: 150px;
+  background: linear-gradient(165deg, rgba(22, 32, 48, 0.94) 0%, rgba(8, 12, 20, 0.97) 100%);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  border-radius: 6px;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.6),
+    0 8px 30px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  font-family: "Orbitron", system-ui, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.shard-flight-newton::before,
+.shard-flight-newton::after {
+  content: "";
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  pointer-events: none;
+}
+
+.shard-flight-newton::before {
+  top: -1px;
+  left: -1px;
+  border-top: 2px solid rgba(56, 189, 248, 0.75);
+  border-left: 2px solid rgba(56, 189, 248, 0.75);
+}
+
+.shard-flight-newton::after {
+  bottom: -1px;
+  right: -1px;
+  border-bottom: 2px solid rgba(56, 189, 248, 0.75);
+  border-right: 2px solid rgba(56, 189, 248, 0.75);
+}
+
+.shard-flight-newton--visible {
+  display: flex;
+}
+
+.shard-flight-newton__title {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(103, 232, 249, 0.85);
+  text-shadow: 0 0 8px rgba(34, 211, 238, 0.4);
+  text-align: center;
+}
+
+.shard-flight-newton__eqn {
+  font-size: 14px;
+  font-weight: 700;
+  font-style: italic;
+  color: rgba(186, 230, 253, 0.85);
+  letter-spacing: 0.05em;
+  text-align: center;
+  padding: 4px 0;
+  border-top: 1px solid rgba(56, 189, 248, 0.2);
+  border-bottom: 1px solid rgba(56, 189, 248, 0.2);
+}
+
+.shard-flight-newton__var {
+  color: rgba(250, 204, 21, 0.95);
+  font-weight: 700;
+  text-shadow: 0 0 6px rgba(250, 204, 21, 0.35);
+}
+
+.shard-flight-newton__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.shard-flight-newton__row {
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  align-items: baseline;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.shard-flight-newton__sym {
+  font-size: 12px;
+  font-weight: 700;
+  font-style: italic;
+  color: rgba(250, 204, 21, 0.95);
+  text-shadow: 0 0 6px rgba(250, 204, 21, 0.35);
+}
+
+.shard-flight-newton__val {
+  font-size: 14px;
+  font-weight: 700;
+  color: rgba(232, 255, 255, 0.98);
+  text-shadow: 0 0 8px rgba(34, 211, 238, 0.35);
+  text-align: right;
+}
+
+.shard-flight-newton__row--a .shard-flight-newton__val {
+  color: rgba(186, 230, 253, 1);
+  text-shadow: 0 0 10px rgba(34, 211, 238, 0.55);
+}
+
+.shard-flight-newton__row--v .shard-flight-newton__val {
+  color: rgba(167, 243, 208, 0.98);
+  text-shadow: 0 0 8px rgba(52, 211, 153, 0.45);
+}
+
+.shard-flight-newton__unit {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(148, 163, 184, 0.85);
+  min-width: 2.5em;
+  text-align: left;
+}
+
+@media (max-width: 640px) {
+  .shard-flight-newton {
+    left: calc(10px + env(safe-area-inset-left, 0px));
+    padding: 8px 10px;
+    min-width: 124px;
+    gap: 6px;
+  }
+  .shard-flight-newton__eqn { font-size: 12px; }
+  .shard-flight-newton__val { font-size: 12px; }
 }
 
 .shard-flight-game-over {

@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import { spheresOverlap } from "./shard-flight-collision.js";
-import { poleBrake } from "./camera-controller.js";
 import {
   buildBoosterRing,
   updateBoosterFlames,
@@ -8,19 +7,17 @@ import {
   emitSmoke,
   updateSmokeTrail,
   clearSmokeTrail,
-  disposeBoosters,
-  disposeSmokeTrail,
   setSmokeTrailViewportHeight,
 } from "./shard-flight-boosters.js";
 
 const SHIP_RADIUS = 0.075;
 const AIM_RAMP_UP_SEC = 0.5;
 const AIM_RETURN_SEC = 0.18;
-/** Max yaw rotation rate of the aim direction when D / A is fully deflected (rad / sec). */
-const AIM_YAW_RATE = 0.6;
-/** Max pitch rotation rate of the aim direction when W / S is fully deflected (rad / sec). */
-const AIM_PITCH_RATE = 0.45;
-/** Distance ahead of the ship where the aim dot lives in world space — far enough to feel "in space". */
+/** How fast the crosshair drifts across the screen when WASD is held (NDC units / sec). */
+const AIM_SCREEN_DRIFT_RATE = 0.85;
+/** Max crosshair offset from screen center (NDC, ±1 = viewport edge). */
+const AIM_SCREEN_MAX = 0.72;
+/** Distance ahead of the ship for the thrust line endpoint in world space. */
 const AIM_FAR_DIST = 50;
 
 // ─── Rocket physics constants ────────────────────────────────────────────────
@@ -38,13 +35,27 @@ const AIM_FAR_DIST = 50;
 //
 /** Empty ship mass (no fuel). Game units. */
 const SHIP_DRY_MASS = 1.0;
-/** Tank capacity, game units of "fuel mass". Wet mass = SHIP_DRY_MASS + this. */
-const SHIP_FUEL_MAX = 4.0;
+/**
+ * Tank capacity, game units of "fuel mass". Wet mass = SHIP_DRY_MASS + this.
+ *
+ * At a full 16-unit tank the wet mass is 17, so starting accel at full throttle
+ * is 28/17 ≈ 1.65 game-u/s² — slow and heavy (intentional Tsiolkovsky feel).
+ * As fuel burns the mass drops and acceleration climbs; by the time the tank
+ * is at a quarter (fuel = 4) accel is back up to 28/5 ≈ 5.6 game-u/s² — the
+ * spry, original ship feel — and it keeps rising as you burn down.
+ *
+ * Full-tank Δv potential is v_e · ln(m₀/m_f) = 35 · ln(17/1) ≈ 99 game-u,
+ * well above the speed cap so the tank carries plenty of "headroom" of
+ * stored Δv across multiple boosts (≈6 boosts on a full tank).
+ */
+const SHIP_FUEL_MAX = 16.0;
 /**
  * Maximum continuous thrust at full throttle (force, game units).
- * With a full tank (m = 5) this gives a starting acceleration of 28/5 = 5.6
- * game-u/s² — Falcon-9-ish TWR, so a few seconds of throttle to spool up to
- * {@link SHIP_MAX_SPEED} instead of the snappy old SHIP_ACCEL=52.
+ * With a full tank (wet mass = SHIP_DRY_MASS + SHIP_FUEL_MAX = 17) the starting
+ * acceleration is 28/17 ≈ 1.65 game-u/s² — Saturn-V-ish TWR (≈1.18 vs gravity
+ * in real life; here gravity is zero, so this is just the raw figure). As fuel
+ * burns the mass drops and accel climbs — the characteristic "rocket builds
+ * up" curve Tsiolkovsky describes.
  */
 const SHIP_MAX_THRUST = 28.0;
 /**
@@ -57,22 +68,26 @@ const SHIP_BOOST_DURATION_SEC = 0.45;
 /**
  * Effective exhaust velocity v_e for Tsiolkovsky. Sets ṁ = thrust / v_e, so
  * higher v_e = more efficient burn (slower fuel drain for the same thrust).
- * Tuned so that a full tank yields Δv = v_e · ln(5/1) ≈ 56 game-u — well
- * above the speed cap but reachable across multiple boosts.
+ * With a 16-unit tank a full burn yields Δv = v_e · ln(17/1) ≈ 99 game-u —
+ * way above any cruising speed you'd reach in practice, and the ship can
+ * stack burns to keep going faster (no top-speed cap any more).
  */
 const SHIP_EXHAUST_V = 35.0;
 /**
  * Passive fuel regen. Real rockets don't do this; we add it so a paused /
- * coasting ship eventually re-fills. Steady-state sustainable thrust is then
- * thrust* = FUEL_REGEN_PER_SEC · v_e ≈ 15.75, ~56% of {@link SHIP_MAX_THRUST}.
+ * coasting ship eventually re-fills. Steady-state sustainable thrust is
+ * thrust* = FUEL_REGEN_PER_SEC · v_e ≈ 15.75 — about 56% of {@link SHIP_MAX_THRUST},
+ * so anything up to ~half-throttle is sustainable indefinitely.
  */
 const FUEL_REGEN_PER_SEC = 0.45;
-/** Soft cap. Above this an RCS-like drag bleeds the excess off. */
-const SHIP_MAX_SPEED = 32.0;
-/** Exponential velocity damping when neither throttle nor boost is active. */
-const COAST_DAMPING_PER_SEC = 0.35;
-/** Rate (1/sec) at which the velocity vector slerps toward the aim direction. */
-const RCS_ALIGN_RATE = 0.75;
+/**
+ * Very gentle fly-by-wire assist: slerp the velocity vector toward the aim direction
+ * at this rate (1/sec, exponential). Real spaceships need a lateral RCS burn to do
+ * this — there is nothing physical in vacuum that would rotate your momentum for free.
+ * We keep a token amount (≈ 0.15) so steering still feels responsive over a few
+ * seconds; set to 0 for purely Newtonian "drift in the original direction" feel.
+ */
+const RCS_ALIGN_RATE = 0.15;
 /** Smoke particles per game-unit of fuel burned. Plume density tracks ṁ. */
 const SMOKE_PARTICLES_PER_MASS_UNIT = 32;
 /** Burst of extra smoke emitted the instant a boost fires (the visible "blast"). */
@@ -81,29 +96,37 @@ const BOOST_FIRE_BURST_PARTICLES = 22;
 const BOOST_MIN_FUEL = 0.18;
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Click-and-hold throttle ramp rates. Pressing the canvas drives the throttle toward 1.0
+ * at {@link THROTTLE_RAMP_UP_PER_SEC} per second; releasing it lets it decay back toward 0
+ * at the slower {@link THROTTLE_DECAY_PER_SEC} — gas-pedal feel where letting off lingers.
+ */
+const THROTTLE_RAMP_UP_PER_SEC = 0.6;
+const THROTTLE_DECAY_PER_SEC = 0.22;
+
 const SHELL_PAD_MIN = 0.32;
 const SHELL_MAX = 26;
-/** Where the ship spawns ahead of the camera at the start of a flight. */
-const SPAWN_DIST = 5;
+/** Local axis that points out the ship's nose (hull cone + glow sit at negative Z). */
+const SHIP_NOSE_LOCAL = new THREE.Vector3(0, 0, -1);
 /** Distance the chase camera trails behind the ship's nose, in world units. */
 const CAM_BEHIND = 2;
 /** World-up lift on top of {@link CAM_BEHIND} for a slight over-the-shoulder pose. */
 const CAM_UP = 0.5;
-/**
- * Exponential follow rate (1/sec) for the chase camera position lerp. dt-independent:
- * factor = 1 - exp(-rate * dt). Higher = snappier. ~5 gives ~half-second to close most of the gap.
- */
+/** Exponential follow rate (1/sec) for the chase camera position lerp. */
 const CAM_FOLLOW_RATE = 5;
 const EXPLODE_SEC = 0.75;
 
 const _fwd = new THREE.Vector3();
-const _right = new THREE.Vector3();
 const _toAim = new THREE.Vector3();
 const _vDir = new THREE.Vector3();
 const _planetCenter = new THREE.Vector3();
 const _offset = new THREE.Vector3();
 const _camWant = new THREE.Vector3();
 const _worldUp = new THREE.Vector3(0, 1, 0);
+const _screenRay = new THREE.Vector3();
+const _dbgShip0 = new THREE.Vector3();
+const _dbgCam0 = new THREE.Vector3();
+const _dbgShip1 = new THREE.Vector3();
 
 function approachDeflection(current, target, dt) {
   if (current === target) return target;
@@ -124,15 +147,6 @@ function boostThrustFactor(boostTimeRemaining, duration) {
   return Math.min(1, boostTimeRemaining / Math.max(1e-6, taperWindow));
 }
 
-function applySoftSpeedCap(velocity, maxSpeed, dt) {
-  const speed = velocity.length();
-  if (speed <= maxSpeed) return;
-  const over = speed - maxSpeed;
-  // Decel scales with overspeed so the cap is soft — boost can punch past it briefly.
-  const decel = Math.min(speed, (over * 2.0 + maxSpeed * 0.01) * dt);
-  velocity.multiplyScalar(Math.max(0, (speed - decel) / speed));
-}
-
 function alignVelocityToAim(velocity, aimDir, rate, dt, scratch) {
   const speed = velocity.length();
   if (speed < 1e-4) return;
@@ -140,6 +154,24 @@ function alignVelocityToAim(velocity, aimDir, rate, dt, scratch) {
   scratch.copy(velocity).multiplyScalar(1 / speed);
   scratch.lerp(aimDir, alignFactor).normalize();
   velocity.copy(scratch).multiplyScalar(speed);
+}
+
+/** World-space line from the ship to the aim target — shows the thrust axis. */
+function buildAimLine() {
+  const geo = new THREE.BufferGeometry();
+  const positions = new Float32Array(6);
+  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.LineBasicMaterial({
+    color: 0x67e8f9,
+    transparent: true,
+    opacity: 0.9,
+    depthWrite: false,
+    toneMapped: false,
+  });
+  const line = new THREE.Line(geo, mat);
+  line.frustumCulled = false;
+  line.renderOrder = 24;
+  return line;
 }
 
 function buildShipGroup() {
@@ -203,7 +235,7 @@ export default class ShardFlightGame {
    * @param {import('three').Mesh} opts.planetMesh
    * @param {() => number} opts.getPlanetRadius
    * @param {HTMLElement} opts.container
-   * @param {{ setAimDotVisible: (v: boolean) => void, syncAimDot: (cam: import('three').Camera, aim: import('three').Vector3, container: HTMLElement) => void, showGameOver: () => void, hideGameOver: () => void, setThrottleVisible?: (v: boolean) => void, setFuelFraction?: (f: number) => void }} opts.hud
+   * @param {{ setAimDotVisible: (v: boolean) => void, syncAimDot: (ndcX: number, ndcY: number, container: HTMLElement) => void, showGameOver: () => void, hideGameOver: () => void, setThrottleVisible?: (v: boolean) => void, setFuelFraction?: (f: number) => void, resetThrottle?: () => void, setThrottleVisualValue?: (v: number) => void, setNewton?: (values: { thrust: number, mass: number, accel: number, speed: number }) => void }} opts.hud
    */
   constructor({
     scene,
@@ -231,14 +263,26 @@ export default class ShardFlightGame {
     this._smoke = createSmokeTrail();
     this._smoke.visible = false;
     this.scene.add(this._smoke);
+    this._aimLine = buildAimLine();
+    this._aimLine.visible = false;
+    this.scene.add(this._aimLine);
     this._tmpNozzleWorld = this._boosters.localPositions.map(() => new THREE.Vector3());
     this.velocity = new THREE.Vector3();
     this.aimWorld = new THREE.Vector3();
     this.aimDir = new THREE.Vector3(0, 0, -1);
     this.aimOffsetX = 0;
     this.aimOffsetY = 0;
-    /** Throttle setting (0..1). Driven by the right-side HUD slider. */
+    this.aimScreenX = 0;
+    this.aimScreenY = 0;
+    /**
+     * Throttle setting (0..1). Driven primarily by click-and-hold on the canvas — see
+     * {@link setThrottlePressed} and {@link _updateThrottleFromPress}. Dragging the HUD
+     * slider still writes directly into this value via {@link setThrottle} for manual
+     * overrides.
+     */
     this.throttle = 0;
+    /** True while the user is holding the pointer down on the canvas (not on HUD). */
+    this._throttlePressed = false;
     /** Remaining fuel mass (game units). Wet mass = SHIP_DRY_MASS + fuel. */
     this.fuel = SHIP_FUEL_MAX;
     /** Countdown timer for the boost-thrust window (seconds). 0 = not boosting. */
@@ -247,30 +291,16 @@ export default class ShardFlightGame {
     this._smokeAccum = 0;
     /** Cached mass-flow rate for the current frame (used by the smoke emitter). */
     this._lastMassFlow = 0;
+    /** Cached thrust / mass / accel from the last integrator step (for the HUD). */
+    this._lastThrust = 0;
+    this._lastMass = SHIP_DRY_MASS + SHIP_FUEL_MAX;
+    this._lastAccel = 0;
     /** @type {THREE.Points | null} */
     this._explosion = null;
-    /** @type {number} agent debug: frame index for tick segmentation logs */
-    this._debugTickIndex = 0;
   }
 
   enter() {
     if (this.active) return;
-    // #region agent log
-    const _agentEnterT0 = performance.now();
-    fetch("http://127.0.0.1:7420/ingest/78a6f2ec-47fb-4ea6-9cbc-d865eb7eaeff", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "297bb4" },
-      body: JSON.stringify({
-        sessionId: "297bb4",
-        location: "shard-flight-game.js:enter",
-        message: "enter start",
-        data: {},
-        timestamp: Date.now(),
-        hypothesisId: "H5",
-        runId: "pre-fix",
-      }),
-    }).catch(() => {});
-    // #endregion
     this.active = true;
     this.gameOver = false;
     this.camCtrl.shardFlightMode = true;
@@ -279,69 +309,27 @@ export default class ShardFlightGame {
     this.camCtrl.zoomActive = false;
     this.velocity.set(0, 0, 0);
     this.throttle = 0;
+    this._throttlePressed = false;
     this.fuel = SHIP_FUEL_MAX;
     this.boostTimeRemaining = 0;
     this._smokeAccum = 0;
     this._lastMassFlow = 0;
+    this._lastThrust = 0;
+    this._lastMass = SHIP_DRY_MASS + this.fuel;
+    this._lastAccel = 0;
     this._smoke.visible = true;
     clearSmokeTrail(this._smoke);
     this._syncSmokeViewport();
-    this._debugTickIndex = 0;
-
-    // #region agent log
-    const _agentBeforeUwm = performance.now();
-    // #endregion
     this.planetMesh.updateWorldMatrix(true, true);
-    // #region agent log
-    fetch("http://127.0.0.1:7420/ingest/78a6f2ec-47fb-4ea6-9cbc-d865eb7eaeff", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "297bb4" },
-      body: JSON.stringify({
-        sessionId: "297bb4",
-        location: "shard-flight-game.js:enter:afterUwm",
-        message: "after planetMesh.updateWorldMatrix(true,true)",
-        data: {
-          uwmMs: performance.now() - _agentBeforeUwm,
-          enterSoFarMs: performance.now() - _agentEnterT0,
-        },
-        timestamp: Date.now(),
-        hypothesisId: "H5",
-        runId: "pre-fix",
-      }),
-    }).catch(() => {});
-    // #endregion
-    this.planetMesh.getWorldPosition(_planetCenter);
-
-    this.camera.getWorldDirection(_fwd);
-    _fwd.normalize();
-    this.ship.position.copy(this.camera.position).addScaledVector(_fwd, SPAWN_DIST);
-    this.ship.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), _fwd);
-
-    this.aimOffsetX = 0;
-    this.aimOffsetY = 0;
-    this.aimDir.copy(_fwd);
-    this.aimWorld.copy(this.ship.position).addScaledVector(this.aimDir, AIM_FAR_DIST);
-
     this.scene.add(this.ship);
+    this._placeShipInShellFacingPlanet();
     this.hud.setAimDotVisible(true);
     this.hud.setThrottleVisible?.(true);
+    this.hud.resetThrottle?.();
     this.hud.setFuelFraction?.(this.fuel / SHIP_FUEL_MAX);
     this.hud.hideGameOver();
-    // #region agent log
-    fetch("http://127.0.0.1:7420/ingest/78a6f2ec-47fb-4ea6-9cbc-d865eb7eaeff", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "297bb4" },
-      body: JSON.stringify({
-        sessionId: "297bb4",
-        location: "shard-flight-game.js:enter:end",
-        message: "enter end",
-        data: { totalEnterMs: performance.now() - _agentEnterT0 },
-        timestamp: Date.now(),
-        hypothesisId: "H5",
-        runId: "pre-fix",
-      }),
-    }).catch(() => {});
-    // #endregion
+    this._aimLine.visible = true;
+    this._updateAimLine();
   }
 
   /** @param {{ mesh: import('three').Mesh }} primaryPlanet */
@@ -349,6 +337,7 @@ export default class ShardFlightGame {
     if (!this.active) return;
     this.active = false;
     this.gameOver = false;
+    this._throttlePressed = false;
     this.camCtrl.shardFlightMode = false;
     this.camCtrl.followPlanet = primaryPlanet;
     this.camCtrl.followComet = null;
@@ -360,6 +349,7 @@ export default class ShardFlightGame {
     this.hud.setAimDotVisible(false);
     this.hud.setThrottleVisible?.(false);
     this.hud.hideGameOver();
+    this._aimLine.visible = false;
   }
 
   restart() {
@@ -369,35 +359,60 @@ export default class ShardFlightGame {
     this.ship.visible = true;
     this.velocity.set(0, 0, 0);
     this.throttle = 0;
+    this._throttlePressed = false;
     this.fuel = SHIP_FUEL_MAX;
     this.boostTimeRemaining = 0;
     this._smokeAccum = 0;
     this._lastMassFlow = 0;
+    this._lastThrust = 0;
+    this._lastMass = SHIP_DRY_MASS + this.fuel;
+    this._lastAccel = 0;
     clearSmokeTrail(this._smoke);
     this._smoke.visible = true;
     updateBoosterFlames(this._boosters, 0, 1);
-    this.planetMesh.getWorldPosition(_planetCenter);
-    this.camera.getWorldDirection(_fwd);
-    _fwd.normalize();
-    this.ship.position.copy(this.camera.position).addScaledVector(_fwd, SPAWN_DIST);
-    this.ship.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), _fwd);
-    this.aimOffsetX = 0;
-    this.aimOffsetY = 0;
-    this.aimDir.copy(_fwd);
-    this.aimWorld.copy(this.ship.position).addScaledVector(this.aimDir, AIM_FAR_DIST);
+    this._placeShipInShellFacingPlanet();
     this.hud.setThrottleVisible?.(true);
+    this.hud.resetThrottle?.();
     this.hud.setFuelFraction?.(this.fuel / SHIP_FUEL_MAX);
     this.hud.hideGameOver();
+    this._aimLine.visible = true;
+    this._updateAimLine();
   }
 
   /**
-   * Set the continuous-thrust setting. Called by the HUD throttle slider on every drag tick.
+   * Set the continuous-thrust setting. Called by the HUD throttle slider on every drag tick
+   * for manual overrides. The auto-ramp in {@link _updateThrottleFromPress} will keep adjusting
+   * from there on the next frame.
    * @param {number} value 0..1
    */
   setThrottle(value) {
     const v = Number(value);
     if (Number.isNaN(v)) return;
     this.throttle = Math.max(0, Math.min(1, v));
+  }
+
+  /**
+   * Update the click-and-hold state. While pressed, {@link _updateThrottleFromPress} ramps
+   * {@link throttle} toward 1; while released it decays toward 0. Wired by the HUD's
+   * pointerdown / pointerup handlers (pointer-captured so a release off-canvas still fires).
+   * @param {boolean} pressed
+   */
+  setThrottlePressed(pressed) {
+    this._throttlePressed = !!pressed;
+  }
+
+  /**
+   * Gas-pedal integration: ramp up while held, decay while released. Linear so the slider
+   * visibly tracks at a constant rate; the rocket math downstream is what makes the actual
+   * acceleration feel curvy (mass-dependent a = F/m).
+   * @param {number} dt
+   */
+  _updateThrottleFromPress(dt) {
+    if (this._throttlePressed) {
+      this.throttle = Math.min(1, this.throttle + THROTTLE_RAMP_UP_PER_SEC * dt);
+    } else if (this.throttle > 0) {
+      this.throttle = Math.max(0, this.throttle - THROTTLE_DECAY_PER_SEC * dt);
+    }
   }
 
   /**
@@ -424,24 +439,72 @@ export default class ShardFlightGame {
   }
 
   /**
+   * Place the ship on the flight shell between the planet and the camera, aimed at the planet.
+   * World-space camera offset from the planet can be thousands of units (solar-system coords);
+   * spawning at camera+fwd left the ship outside the shell and {@link _clampShell} pinned it
+   * on the outer wall with velocity drained every frame.
+   */
+  _placeShipInShellFacingPlanet() {
+    this.planetMesh.updateWorldMatrix(true, true);
+    this.planetMesh.getWorldPosition(_planetCenter);
+    _offset.subVectors(this.camera.position, _planetCenter);
+    let camDist = _offset.length();
+    if (camDist < 1e-4) {
+      _offset.set(0, 0, 1);
+      camDist = 1;
+    } else {
+      _offset.multiplyScalar(1 / camDist);
+    }
+    const R = this.getPlanetRadius();
+    const minD = R + SHELL_PAD_MIN + SHIP_RADIUS;
+    const spawnR = Math.min(Math.max(camDist, minD + 0.5), SHELL_MAX - 0.5);
+    this.ship.position.copy(_planetCenter).addScaledVector(_offset, spawnR);
+    this.aimDir.copy(_offset).negate().normalize();
+    this.ship.quaternion.setFromUnitVectors(SHIP_NOSE_LOCAL, this.aimDir);
+    this.aimOffsetX = 0;
+    this.aimOffsetY = 0;
+    this._projectAimDirToScreen();
+  }
+
+  /** Match {@link aimScreenX} / {@link aimScreenY} to the current {@link aimDir} on the view. */
+  _projectAimDirToScreen() {
+    this.aimWorld.copy(this.ship.position).addScaledVector(this.aimDir, AIM_FAR_DIST);
+    _screenRay.copy(this.aimWorld).project(this.camera);
+    if (_screenRay.z <= 1) {
+      this.aimScreenX = THREE.MathUtils.clamp(_screenRay.x, -AIM_SCREEN_MAX, AIM_SCREEN_MAX);
+      this.aimScreenY = THREE.MathUtils.clamp(_screenRay.y, -AIM_SCREEN_MAX, AIM_SCREEN_MAX);
+    } else {
+      this.aimScreenX = 0;
+      this.aimScreenY = 0;
+    }
+  }
+
+  /**
+   * World aim direction from the 2D crosshair position on the current camera view.
+   * @param {THREE.Vector3} out unit vector
+   */
+  _aimDirFromScreenInto(out) {
+    _screenRay.set(this.aimScreenX, this.aimScreenY, 0.5);
+    _screenRay.unproject(this.camera);
+    out.copy(_screenRay).sub(this.camera.position).normalize();
+  }
+
+  /**
    * Per-frame chase camera: lerp the camera toward an over-the-shoulder goal behind the ship's nose,
    * then `lookAt` the ship. Standard three.js third-person camera pattern (goal + lerp + lookAt).
-   * The lerp is dt-independent so the framerate doesn't change the feel.
    * @param {number} dt
    */
   _updateChaseCamera(dt) {
     const target = this.gameOver && this._explosion
       ? this._explosion.position
       : this.ship.position;
-    // Ship's local +Z in world is the "behind the nose" direction (apex sits at local -Z after
-    // the hull rotation flip, so local +Z points opposite to where the ship is heading).
     _fwd.set(0, 0, 1).applyQuaternion(this.ship.quaternion).normalize();
     _camWant.copy(target)
       .addScaledVector(_fwd, CAM_BEHIND)
       .addScaledVector(_worldUp, CAM_UP);
     const factor = 1 - Math.exp(-CAM_FOLLOW_RATE * dt);
-    this.camera.position.lerp(_camWant, factor);
-    this.camera.lookAt(target);
+    // this.camera.position.lerp(_camWant, factor);
+    // this.camera.lookAt(target);
   }
 
   _disposeExplosion() {
@@ -462,6 +525,7 @@ export default class ShardFlightGame {
     this.boostTimeRemaining = 0;
     updateBoosterFlames(this._boosters, 0, 1);
     this.ship.visible = false;
+    this._aimLine.visible = false;
     this._explosion = makeExplosionPoints();
     this._explosion.position.copy(this.ship.position);
     this.scene.add(this._explosion);
@@ -469,50 +533,50 @@ export default class ShardFlightGame {
   }
 
   /**
-   * Translate WASD into yaw / pitch *rates* applied to {@link aimDir}. Holding D yaws right at
-   * AIM_YAW_RATE, holding W pitches up at AIM_PITCH_RATE; releasing the key stops the rotation so
-   * the dot stays wherever the pilot placed it (a flight-stick feel, not a centering joystick).
-   * The dot is then placed AIM_FAR_DIST out in that direction so the ship's lookAt locks onto a
-   * target "far off in space" instead of a point one ship-length away from itself.
+   * Drift the 2D crosshair with WASD (screen space). Releasing a key stops motion but leaves
+   * the crosshair where the pilot placed it. {@link aimDir} is rebuilt each frame from a
+   * camera ray through the crosshair.
    */
   _moveAim(dt) {
     const k = this.camCtrl.keys;
     const targetX = (k.d ? 1 : 0) + (k.a ? -1 : 0);
-    const targetY = (k.w ? 1 : 0) + (k.s ? -1 : 0);
+    const targetY = (k.s ? -1 : 0) + (k.w ? 1 : 0);
     this.aimOffsetX = approachDeflection(this.aimOffsetX, targetX, dt);
     this.aimOffsetY = approachDeflection(this.aimOffsetY, targetY, dt);
 
-    // D-positive (right of screen) wants the aim to rotate clockwise about world up — that's a
-    // negative right-handed rotation around +Y, hence the leading minus.
-    const yawDelta = -this.aimOffsetX * AIM_YAW_RATE * dt;
-    const pitchDelta = this.aimOffsetY * AIM_PITCH_RATE * dt;
-    this._rotateAimDir(yawDelta, pitchDelta);
+    this.aimScreenX = THREE.MathUtils.clamp(
+      this.aimScreenX + this.aimOffsetX * AIM_SCREEN_DRIFT_RATE * dt,
+      -AIM_SCREEN_MAX,
+      AIM_SCREEN_MAX,
+    );
+    this.aimScreenY = THREE.MathUtils.clamp(
+      this.aimScreenY + this.aimOffsetY * AIM_SCREEN_DRIFT_RATE * dt,
+      -AIM_SCREEN_MAX,
+      AIM_SCREEN_MAX,
+    );
 
+    this._aimDirFromScreenInto(this.aimDir);
     this.aimWorld.copy(this.ship.position).addScaledVector(this.aimDir, AIM_FAR_DIST);
   }
 
   /**
-   * Rotate {@link aimDir} by a yaw step about world up and a pitch step about the local right
-   * axis. Pitch is run through the shared {@link poleBrake} so the direction asymptotically
-   * approaches but never reaches `±worldUp`, keeping `lookAt` away from its singularity.
-   * @param {number} yawDelta radians, right-handed about world +Y.
-   * @param {number} pitchDelta radians, right-handed about the current right axis.
+   * Unit vector from the ship toward the crosshair (ship → {@link aimWorld}). That line is
+   * the thrust axis: boosters push the ship along it, exhaust trails behind it.
+   * @param {THREE.Vector3} out
+   * @returns {boolean} false if no valid direction
    */
-  _rotateAimDir(yawDelta, pitchDelta) {
-    if (yawDelta !== 0) {
-      this.aimDir.applyAxisAngle(_worldUp, yawDelta);
+  _thrustDirectionInto(out) {
+    out.subVectors(this.aimWorld, this.ship.position);
+    const len = out.length();
+    if (len > 1e-4) {
+      out.multiplyScalar(1 / len);
+      return true;
     }
-    if (pitchDelta !== 0) {
-      _right.crossVectors(this.aimDir, _worldUp);
-      if (_right.lengthSq() > 1e-6) {
-        _right.normalize();
-        // Rotation around `_right` follows the meridian, so d(aim.y)/dθ ≈ +1 and the proposed
-        // Δy has the same sign as pitchDelta — pass it straight to the brake.
-        const brake = poleBrake(this.aimDir.dot(_worldUp), pitchDelta);
-        this.aimDir.applyAxisAngle(_right, pitchDelta * brake);
-      }
+    if (this.aimDir.lengthSq() > 1e-8) {
+      out.copy(this.aimDir);
+      return true;
     }
-    this.aimDir.normalize();
+    return false;
   }
 
   /**
@@ -547,37 +611,34 @@ export default class ShardFlightGame {
   }
 
   /**
-   * Newton + Tsiolkovsky integration: a = F/m along aim, ṁ = F/v_e drains fuel,
-   * then RCS slerps the velocity vector toward the aim direction so the ship
-   * tracks where the pilot is looking (real ships use lateral thrusters; we
-   * collapse that into one smooth alignment). A soft speed cap and a coast-damp
-   * keep things playable.
+   * Newton + Tsiolkovsky integration: a = F/m along aim, ṁ = F/v_e drains fuel.
+   * Pure vacuum coast — no friction, no speed cap, no coast damping. The only
+   * concession to fly-by-wire is a very gentle slerp of the velocity vector toward
+   * aim (see {@link RCS_ALIGN_RATE}), which stands in for a tiny lateral RCS burn.
    * @param {number} dt
    */
   _integrateShip(dt) {
-    _toAim.subVectors(this.aimWorld, this.ship.position);
-    const dist = _toAim.length();
-    if (dist > 1e-4) _toAim.multiplyScalar(1 / dist);
+    if (!this._thrustDirectionInto(_toAim)) return;
+    this.aimDir.copy(_toAim);
 
     const thrust = this._thrustForCurrentInputs();
     const mass = SHIP_DRY_MASS + this.fuel;
     const accel = thrust / mass;
+    this._lastThrust = thrust;
+    this._lastMass = mass;
+    this._lastAccel = accel;
     this.velocity.addScaledVector(_toAim, accel * dt);
     this._burnFuel(dt);
 
     alignVelocityToAim(this.velocity, _toAim, RCS_ALIGN_RATE, dt, _vDir);
-
-    if (this.throttle < 0.02 && this.boostTimeRemaining <= 0) {
-      this.velocity.multiplyScalar(Math.exp(-COAST_DAMPING_PER_SEC * dt));
-    }
-    applySoftSpeedCap(this.velocity, SHIP_MAX_SPEED, dt);
 
     if (this.boostTimeRemaining > 0) {
       this.boostTimeRemaining = Math.max(0, this.boostTimeRemaining - dt);
     }
 
     this.ship.position.addScaledVector(this.velocity, dt);
-    if (dist > 0.05) this.ship.lookAt(this.aimWorld);
+    this.ship.quaternion.setFromUnitVectors(SHIP_NOSE_LOCAL, _toAim);
+    this.aimWorld.copy(this.ship.position).addScaledVector(this.aimDir, AIM_FAR_DIST);
   }
 
   _clampShell() {
@@ -587,50 +648,28 @@ export default class ShardFlightGame {
     const d = _offset.length();
     const minD = R + SHELL_PAD_MIN + SHIP_RADIUS;
     const maxD = SHELL_MAX;
-    if (d < minD && d > 1e-6) {
-      _offset.multiplyScalar(minD / d);
-      this.ship.position.copy(_planetCenter).add(_offset);
-      this.velocity.multiplyScalar(0.3);
+    if (d < 1e-6) return;
+    const radialOut = _offset.multiplyScalar(1 / d);
+    if (d < minD) {
+      this.ship.position.copy(_planetCenter).addScaledVector(radialOut, minD);
+      const vIn = this.velocity.dot(radialOut);
+      if (vIn < 0) this.velocity.addScaledVector(radialOut, -vIn);
     } else if (d > maxD) {
-      _offset.multiplyScalar(maxD / d);
-      this.ship.position.copy(_planetCenter).add(_offset);
-      this.velocity.multiplyScalar(0.3);
+      this.ship.position.copy(_planetCenter).addScaledVector(radialOut, maxD);
+      const vOut = this.velocity.dot(radialOut);
+      if (vOut > 0) this.velocity.addScaledVector(radialOut, -vOut);
     }
   }
 
   _checkShardHit() {
     const shipPos = this.ship.position;
     let hit = false;
-    // #region agent log
-    const colliderStartMs =
-      this._debugTickIndex < 25 ? performance.now() : 0;
-    // #endregion
     this.pyramidField.forEachActiveShardCollider(({ centerWorld, radius }) => {
       if (hit) return;
       if (spheresOverlap(shipPos, SHIP_RADIUS, centerWorld, radius)) {
         hit = true;
       }
     });
-    // #region agent log
-    if (this._debugTickIndex < 25 && colliderStartMs) {
-      fetch("http://127.0.0.1:7420/ingest/78a6f2ec-47fb-4ea6-9cbc-d865eb7eaeff", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "297bb4" },
-        body: JSON.stringify({
-          sessionId: "297bb4",
-          location: "shard-flight-game.js:_checkShardHit",
-          message: "collider iteration",
-          data: {
-            idx: this._debugTickIndex,
-            colliderMs: performance.now() - colliderStartMs,
-          },
-          timestamp: Date.now(),
-          hypothesisId: "H2",
-          runId: "pre-fix",
-        }),
-      }).catch(() => {});
-    }
-    // #endregion
     if (hit) this._triggerGameOver();
   }
 
@@ -694,6 +733,20 @@ export default class ShardFlightGame {
     setSmokeTrailViewportHeight(this._smoke, h);
   }
 
+  /** Refresh the ship → crosshair thrust line in world space. */
+  _updateAimLine() {
+    const attr = this._aimLine.geometry.attributes.position;
+    const p = attr.array;
+    p[0] = this.ship.position.x;
+    p[1] = this.ship.position.y;
+    p[2] = this.ship.position.z;
+    p[3] = this.aimWorld.x;
+    p[4] = this.aimWorld.y;
+    p[5] = this.aimWorld.z;
+    attr.needsUpdate = true;
+    this._aimLine.geometry.computeBoundingSphere();
+  }
+
   /**
    * Call after `pyramidField.update` each frame while mode may be active.
    * @param {number} dt
@@ -701,19 +754,76 @@ export default class ShardFlightGame {
   update(dt) {
     if (!this.active) return;
 
+    const k = this.camCtrl.keys;
+    const wasdDown = !!(k.w || k.a || k.s || k.d);
+    /** @type {THREE.Vector3 | null} */
+    let shipBeforeClamp = null;
+    if (wasdDown) {
+      _dbgShip0.copy(this.ship.position);
+      _dbgCam0.copy(this.camera.position);
+    }
+
     if (!this.gameOver) {
+      this._updateThrottleFromPress(dt);
+      this._updateChaseCamera(dt);
       this._moveAim(dt);
       this._integrateShip(dt);
+      if (wasdDown) shipBeforeClamp = _dbgShip1.copy(this.ship.position);
       this._clampShell();
-      this._checkShardHit();
+      // this._checkShardHit();
       this._updateBoosterVisuals(dt);
       this.hud.setFuelFraction?.(this.fuel / SHIP_FUEL_MAX);
+      this.hud.setThrottleVisualValue?.(this.throttle);
+      this.hud.setNewton?.({
+        thrust: this._lastThrust,
+        mass: this._lastMass,
+        accel: this._lastAccel,
+        speed: this.velocity.length(),
+      });
     } else {
       this._updateExplosion(dt);
       this._updateBoosterVisuals(dt);
+      this._updateChaseCamera(dt);
     }
 
-    this._updateChaseCamera(dt);
-    this.hud.syncAimDot(this.camera, this.aimWorld, this.container);
+    if (this._aimLine.visible) this._updateAimLine();
+    this.hud.syncAimDot(this.aimScreenX, this.aimScreenY, this.container);
+
+    // #region agent log
+    if (wasdDown) {
+      this._dbgWasdFrame = (this._dbgWasdFrame ?? 0) + 1;
+      if (this._dbgWasdFrame % 10 === 0) {
+        const shipD = _dbgShip1.copy(this.ship.position).sub(_dbgShip0).length();
+        const camD = this.camera.position.distanceTo(_dbgCam0);
+        const clampD = shipBeforeClamp
+          ? this.ship.position.distanceTo(shipBeforeClamp)
+          : 0;
+        fetch("http://127.0.0.1:7420/ingest/78a6f2ec-47fb-4ea6-9cbc-d865eb7eaeff", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "a9743c" },
+          body: JSON.stringify({
+            sessionId: "a9743c",
+            hypothesisId: "H1-H2-H5",
+            location: "shard-flight-game.js:update",
+            message: "WASD frame deltas",
+            data: {
+              shipDelta: shipD,
+              camDelta: camD,
+              clampDelta: clampD,
+              speed: this.velocity.length(),
+              thrust: this._lastThrust,
+              throttle: this.throttle,
+              throttlePressed: this._throttlePressed,
+              aimScreenX: this.aimScreenX,
+              aimScreenY: this.aimScreenY,
+              keys: { w: k.w, a: k.a, s: k.s, d: k.d },
+              shardFlightMode: this.camCtrl.shardFlightMode,
+            },
+            timestamp: Date.now(),
+          }),
+        }).catch(() => {});
+      }
+    }
+    // #endregion
   }
 }

@@ -1449,6 +1449,26 @@ class CameraController {
     cam.getWorldDirection(forward);
     const right = new THREE.Vector3().crossVectors(forward, cam.up).normalize();
     const speed = this.moveSpeed * dt;
+    // #region agent log
+    if (this.keys.w || this.keys.a || this.keys.s || this.keys.d) {
+      fetch("http://127.0.0.1:7420/ingest/78a6f2ec-47fb-4ea6-9cbc-d865eb7eaeff", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "a9743c" },
+        body: JSON.stringify({
+          sessionId: "a9743c",
+          hypothesisId: "H3",
+          location: "camera-controller.js:_updateFreeCamera",
+          message: "free-cam WASD ran",
+          data: {
+            shardFlightMode: this.shardFlightMode,
+            speed,
+            keys: { w: this.keys.w, a: this.keys.a, s: this.keys.s, d: this.keys.d },
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+    }
+    // #endregion
     if (this.keys.w) cam.position.addScaledVector(forward, speed);
     if (this.keys.s) cam.position.addScaledVector(forward, -speed);
     if (this.keys.a) cam.position.addScaledVector(right, -speed);

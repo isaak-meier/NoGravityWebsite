@@ -1208,12 +1208,14 @@ function initScene() {
 
   /** @type {import("./shard-flight-game.js").default | null} */
   let shardFlight = null;
+  const tryStartShardFlight = () => {
+    if (isMobile) return;
+    if (isCameraInsideAnyPlanet(camera.position, solarSystem.planets)) return;
+    shardFlight?.enter();
+  };
   const shardFlightHud = createShardFlightHud(container, {
     isMobile,
-    onStartFlight: () => {
-      if (isCameraInsideAnyPlanet(camera.position, solarSystem.planets)) return;
-      shardFlight?.enter();
-    },
+    onStartFlight: tryStartShardFlight,
     onRestart: () => {
       shardFlight?.restart();
     },
@@ -1223,8 +1225,11 @@ function initScene() {
     onThrottleChange: (v) => {
       shardFlight?.setThrottle(v);
     },
-    onBoost: () => {
-      shardFlight?.triggerBoost();
+    onThrottlePress: () => {
+      shardFlight?.setThrottlePressed(true);
+    },
+    onThrottleRelease: () => {
+      shardFlight?.setThrottlePressed(false);
     },
   });
   container.appendChild(shardFlightHud.root);
@@ -1239,7 +1244,7 @@ function initScene() {
     container,
     hud: shardFlightHud,
   });
-  if (gui) shardFlight.setupGUI(gui);
+  tryStartShardFlight();
 
   const cameraDistanceHud = document.createElement("div");
   cameraDistanceHud.className = "camera-distance-hud";
@@ -1320,15 +1325,6 @@ function initScene() {
   let enterPlanetHudInside = false;
   (function tick() {
     requestAnimationFrame(tick);
-    const logShardFlightFrame =
-      camCtrl.shardFlightMode && shardFlight && shardFlight._debugTickIndex < 25;
-    let frameStartMs = 0;
-    let afterPrePyramidMs = 0;
-    let afterPyramidMs = 0;
-    let afterShardFlightMs = 0;
-    let afterCameraMs = 0;
-    let afterRenderMs = 0;
-    if (logShardFlightFrame) frameStartMs = performance.now();
     if (audioState.stream) audioState.stream.pump();
     const t = clock.getDelta();
     const audioTimeEarly =
@@ -1353,7 +1349,6 @@ function initScene() {
       cometDevInspectOnce = false;
       camCtrl.beginFollowComet(comet);
     }
-    if (logShardFlightFrame) afterPrePyramidMs = performance.now();
     const audioTime = audioTimeEarly;
     pyramidField.update(
       t,
@@ -1364,12 +1359,9 @@ function initScene() {
       },
       { mesh: sphere, radius: planetParams.radius },
     );
-    if (logShardFlightFrame) afterPyramidMs = performance.now();
     shardFlight?.update(t);
-    if (logShardFlightFrame) afterShardFlightMs = performance.now();
     camCtrl.update(t);
     planetSwitcher.syncActive();
-    if (logShardFlightFrame) afterCameraMs = performance.now();
     const insidePlanet = isCameraInsideAnyPlanet(camera.position, solarSystem.planets);
     if (insidePlanet !== enterPlanetHudInside) {
       enterPlanetHudInside = insidePlanet;
@@ -1386,34 +1378,6 @@ function initScene() {
     greenPlanetFadeHandles.setVisible(camCtrl.followPlanet === solarSystem.planets[2]);
     greenPlanetFadeHandles.update(t);
     composer.render();
-    if (logShardFlightFrame) {
-      afterRenderMs = performance.now();
-      // #region agent log
-      fetch("http://127.0.0.1:7420/ingest/78a6f2ec-47fb-4ea6-9cbc-d865eb7eaeff", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "297bb4" },
-        body: JSON.stringify({
-          sessionId: "297bb4",
-          location: "three-scene.js:tick",
-          message: "shard flight frame segments",
-          data: {
-            idx: shardFlight._debugTickIndex,
-            clockDelta: t,
-            prePyramidMs: afterPrePyramidMs - frameStartMs,
-            pyramidMs: afterPyramidMs - afterPrePyramidMs,
-            shardFlightMs: afterShardFlightMs - afterPyramidMs,
-            camCtrlMs: afterCameraMs - afterShardFlightMs,
-            hudAndRenderMs: afterRenderMs - afterCameraMs,
-            frameMs: afterRenderMs - frameStartMs,
-          },
-          timestamp: Date.now(),
-          hypothesisId: "H1",
-          runId: "pre-fix",
-        }),
-      }).catch(() => {});
-      // #endregion
-      shardFlight._debugTickIndex++;
-    }
   })();
 }
 
