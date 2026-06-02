@@ -164,14 +164,14 @@ const CAM_BEHIND = 2;
 /** World-up lift on top of {@link CAM_BEHIND} for a slight over-the-shoulder pose. */
 const CAM_UP = 0.5;
 /** Battle chase offset at {@link BATTLE_SHIP_HULL_SCALE_DEFAULT} (scales with hull slider). */
-const BATTLE_CHASE_CAM_BEHIND = 0.0034;
+const BATTLE_CHASE_CAM_BEHIND = 0.0020;
 const BATTLE_CHASE_CAM_UP = 0.0009;
 /** Orbit-math floor only — keep below chase distance at min hull scale. */
 const BATTLE_CHASE_CAM_MIN_DIST = 0.0012;
 /** Exponential follow rate (1/sec) for the chase camera position lerp. */
-const CAM_FOLLOW_RATE = 5;
+const CAM_FOLLOW_RATE = 7;
 /** Extra position follow rate per unit ship speed (keeps hull size steady under thrust). */
-const CAM_FOLLOW_SPEED_MULT = 14;
+const CAM_FOLLOW_SPEED_MULT = 23;
 /** Default perspective near plane (restored when leaving shard flight). */
 const FLIGHT_CAMERA_NEAR_DEFAULT = 0.1;
 /** Scale-driven near plane while flight is active (must stay below chase distance at min hull scale). */
@@ -1258,8 +1258,7 @@ export default class ShardFlightGame {
     } else {
       const speed = this.velocity.length();
       const rate = CAM_FOLLOW_RATE + speed * CAM_FOLLOW_SPEED_MULT;
-      const factor = 1 - Math.exp(-rate * dt);
-      this.camera.position.lerp(_camWant, factor);
+      this.camera.position.lerp(_camWant);
     }
     this.camera.lookAt(target);
   }
