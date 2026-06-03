@@ -26,11 +26,7 @@ import CameraController from "./camera-controller.js";
 import AudioManager from "./audio-manager.js";
 import Comet from "./comet.js";
 import BeatDetector from "../audio/beat-detector.js";
-import {
-  decodeAudioBufferFromUrl,
-  findTopLoudestBarChunkIndices,
-  mixAudioBufferToMono,
-} from "../audio/laser-chunk-analysis.js";
+import { decodeAudioBufferFromUrl } from "../audio/laser-chunk-analysis.js";
 import {
   computeSmoothedPlanetScale,
 } from "./planet-pulse.js";
@@ -1062,42 +1058,75 @@ function initScene() {
   const audioState = createAudioState();
 
   let graphLaserDecodeGen = 0;
-  let graphLaserDecodedBuffer = null;
+  let graphLaserDecoded = false;
+  let graphLaserDecodedDuration = 0;
   let graphLaserLastAppliedBarDur = 0;
+  /** True while an 'analyze' request is in flight — avoids flooding the worker each frame. */
+  let graphLaserAnalyzePending = false;
+
+  // The loudest-bar-windows analysis (full-song mono mix + RMS scan) runs in a worker so it never
+  // blocks the render thread, even when it re-fires on bar-duration drift mid-playback. Guarded so
+  // it degrades gracefully where Worker is unavailable (e.g. the jsdom test env) — the lasers just
+  // don't gate to hot chunks.
+  let graphLaserWorker = null;
+  if (typeof Worker !== "undefined") {
+    try {
+      graphLaserWorker = new Worker(
+        new URL("../audio/laser-chunk-worker.js", import.meta.url),
+        { type: "module" },
+      );
+      graphLaserWorker.onmessage = (e) => {
+        const msg = e.data;
+        if (!msg || msg.type !== "result") return;
+        graphLaserAnalyzePending = false;
+        if (msg.gen !== graphLaserDecodeGen) return; // result for a replaced track
+        solarSystem.setGraphLaserHotChunkIndices(
+          msg.indices && msg.indices.length > 0 ? msg.indices : [],
+        );
+      };
+    } catch (err) {
+      console.warn("Graph laser worker unavailable; hot-chunk lasers disabled:", err);
+      graphLaserWorker = null;
+    }
+  }
 
   function invalidateGraphLaserChunkState() {
     graphLaserDecodeGen++;
-    graphLaserDecodedBuffer = null;
+    graphLaserDecoded = false;
+    graphLaserDecodedDuration = 0;
     graphLaserLastAppliedBarDur = 0;
+    graphLaserAnalyzePending = false;
     solarSystem.setGraphLaserHotChunkIndices(null);
     return graphLaserDecodeGen;
   }
 
   function applyGraphLaserHotChunksFromDecoded(gen) {
-    if (gen !== graphLaserDecodeGen || !graphLaserDecodedBuffer || audioState._liveStream) return;
+    if (!graphLaserWorker) return;
+    if (gen !== graphLaserDecodeGen || !graphLaserDecoded || audioState._liveStream) return;
+    if (graphLaserAnalyzePending) return; // one analyze in flight at a time
     const el = audioState.audioEl;
     if (!el) return;
     const dur =
       Number.isFinite(el.duration) && el.duration > 0
         ? el.duration
-        : graphLaserDecodedBuffer.duration;
+        : graphLaserDecodedDuration;
     const bar = beatDetector.barDuration;
     if (!Number.isFinite(bar) || bar <= 1e-6 || !Number.isFinite(dur) || dur <= 0) return;
-    const mono = mixAudioBufferToMono(graphLaserDecodedBuffer);
-    const indices = findTopLoudestBarChunkIndices(
-      mono,
-      graphLaserDecodedBuffer.sampleRate,
-      dur,
-      bar,
-      16,
-      2,
-    );
-    if (gen !== graphLaserDecodeGen) return;
-    solarSystem.setGraphLaserHotChunkIndices(indices.length > 0 ? indices : []);
+    graphLaserAnalyzePending = true;
+    // Optimistic: stop onSpectrum re-posting every frame until the bar drifts again past threshold.
     graphLaserLastAppliedBarDur = bar;
+    graphLaserWorker.postMessage({
+      type: "analyze",
+      gen,
+      durationSec: dur,
+      barDurationSec: bar,
+      barsPerChunk: 16,
+      topK: 2,
+    });
   }
 
   async function runGraphLaserChunkDecodeAndApply(expectedGen) {
+    if (!graphLaserWorker) return; // no worker → skip decode entirely (feature disabled)
     const el = audioState.audioEl;
     const ctx = audioState.fft?.context;
     if (!el || !ctx || audioState._liveStream) return;
@@ -1106,7 +1135,27 @@ function initScene() {
     try {
       const buf = await decodeAudioBufferFromUrl(ctx, url);
       if (expectedGen !== graphLaserDecodeGen) return;
-      graphLaserDecodedBuffer = buf;
+      // Copy each channel into its own transferable buffer (copying, not transferring, the decoded
+      // AudioBuffer — detaching its data would corrupt it; the copy is a cheap memcpy vs the scan).
+      const channels = [];
+      const transfer = [];
+      for (let c = 0; c < buf.numberOfChannels; c++) {
+        const copy = buf.getChannelData(c).slice();
+        channels.push(copy.buffer);
+        transfer.push(copy.buffer);
+      }
+      graphLaserDecoded = true;
+      graphLaserDecodedDuration = buf.duration;
+      graphLaserWorker.postMessage(
+        {
+          type: "load",
+          gen: expectedGen,
+          channels,
+          length: buf.length,
+          sampleRate: buf.sampleRate,
+        },
+        transfer,
+      );
       applyGraphLaserHotChunksFromDecoded(expectedGen);
     } catch (err) {
       console.warn("Graph laser chunk decode failed:", err);
@@ -1171,7 +1220,7 @@ function initScene() {
     }
     solarSystem.tryTriggerRedPlanetOnBeat(beatInfo.isBeat);
 
-    if (!audioState._liveStream && graphLaserDecodedBuffer) {
+    if (!audioState._liveStream && graphLaserDecoded) {
       const bar = beatDetector.barDuration;
       if (Number.isFinite(bar) && bar > 1e-6) {
         const rel =
@@ -1439,7 +1488,9 @@ function initScene() {
     const cometSubsteps = Math.min(200, Math.max(1, Math.ceil(t / maxCometStep)));
     const cometDt = t / cometSubsteps;
     for (let si = 0; si < cometSubsteps; si++) {
-      comet.update(cometDt);
+      // Sub-step motion smoothly, but emit a trail puff only on the final substep so the trail
+      // (and its per-frame work) stays one-per-frame regardless of how many substeps run.
+      comet.update(cometDt, { emitTrail: si === cometSubsteps - 1 });
     }
     if (cometDevInspectOnce) {
       cometDevInspectOnce = false;

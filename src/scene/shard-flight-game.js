@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { poleBrake } from "./camera-controller.js";
 import { spheresOverlap } from "./shard-flight-collision.js";
+import { RING_PATTERN_BAND_FRACS } from "../pyramid/fragment-pattern-math.js";
 import {
   buildBoosterRing,
   updateBoosterFlames,
@@ -14,17 +15,21 @@ import {
   computeBattleShipMetrics,
   computeBattleGoalAhead,
   computeBattleGoalAlongRing,
-  collectShardSpawnAnchors,
-  computeBattleSpawnInShardField,
   computeBattleOrientationTowardGoal,
   buildBattleGoalMarker,
-  buildBattleRingBoundaryMesh,
-  computeBattleRingBoundaryRadii,
-  disposeBattleRingBoundaryMesh,
-  isShipOutsideBattleRingBoundaryWorld,
-  collectBattleShardObstacles,
   planBattleRouteWaypoints,
   nudgePointClearOfShardObstacles,
+  levelToBandIndex,
+  battleHullScaleForLevel,
+  computeBattleTunnelGeometry,
+  buildBattleTunnelMesh,
+  disposeBattleTunnelMesh,
+  isShipOutsideBattleTunnelWorld,
+  collectRingTunnelShardAnchors,
+  computeBattleTunnelSpawn,
+  isInRingTunnelLocal,
+  BATTLE_TUNNEL_LEVEL,
+  BATTLE_TUNNEL_GOAL_SHARD_STEPS,
   BATTLE_SHIP_HULL_SCALE_MIN,
   BATTLE_SHIP_HULL_SCALE_MAX,
   BATTLE_SHIP_HULL_SCALE_DEFAULT,
@@ -54,6 +59,8 @@ const BATTLE_ROUTE_MAX_POINTS = 28;
 const BATTLE_ROUTE_PREVIEW_SEC = 2.8;
 /** Battle route line opacity pulse (rad/s). */
 const BATTLE_ROUTE_PULSE_RATE = 3.6;
+/** Seconds between shard-aware route replans — the heavy battle compute, throttled to ~12 Hz. */
+const BATTLE_ROUTE_REPLAN_INTERVAL = 1 / 12;
 /** Yaw rate for A / D (rad/s, world +Y). */
 const SHIP_YAW_RATE = 1.15;
 /** Pitch rate for W / S (rad/s, ship-local right). */
@@ -148,12 +155,12 @@ const BOOST_MIN_FUEL = 0.18;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Click-and-hold throttle ramp rates. Pressing the canvas drives the throttle toward 1.0
- * at {@link THROTTLE_RAMP_UP_PER_SEC} per second; releasing it lets it decay back toward 0
- * at the slower {@link THROTTLE_DECAY_PER_SEC} — gas-pedal feel where letting off lingers.
+ * Click-and-hold throttle response. Pressing the canvas eases the throttle toward 1.0 with an
+ * exponential approach at {@link THROTTLE_RAMP_RATE} (1/sec) — responsive but smooth (≈30% in
+ * 0.1 s, ≈70% in 0.3 s). Releasing it falls back toward 0 at the same rate, so spool-up and
+ * spool-down feel symmetric. Raise for a sharper kick, lower for a softer pedal.
  */
-const THROTTLE_RAMP_UP_PER_SEC = 0.6;
-const THROTTLE_DECAY_PER_SEC = 0.22;
+const THROTTLE_RAMP_RATE = 4;
 
 const SHELL_PAD_MIN = 0.32;
 const SHELL_MAX = 26;
@@ -211,8 +218,6 @@ const _battleGoalPos = new THREE.Vector3();
 const _routePos = new THREE.Vector3();
 const _routeVel = new THREE.Vector3();
 const _routeToGoal = new THREE.Vector3();
-/** @type {{ center: THREE.Vector3, radius: number }[]} */
-const _routeObstacles = [];
 /** @type {THREE.Vector3[]} */
 const _routeWaypoints = [];
 /** @type {import('./shard-battle-helpers.js').ShardSpawnAnchor[]} */
@@ -224,6 +229,9 @@ const _battleEntryEndQuat = new THREE.Quaternion();
 const _battleFieldDir = new THREE.Vector3();
 const _qBattleEntrySlerp = new THREE.Quaternion();
 const _planetScaleScratch = new THREE.Vector3();
+/** Scratch for ring-tunnel membership: world→planet-local transform of a shard collider. */
+const _battleWorldToLocal = new THREE.Matrix4();
+const _battleShardLocal = new THREE.Vector3();
 
 function easeInOutCubic(t) {
   return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
@@ -373,13 +381,12 @@ function fillShardAwareBattleRoutePositions(
   fuel,
   shipRadius,
   avgShardR,
-  pyramidField,
+  obstacles,
   outPositions,
   maxPoints,
 ) {
-  collectBattleShardObstacles(pyramidField, _routeObstacles);
   const clearance = shipRadius + avgShardR * BATTLE_ROUTE_CLEARANCE_SHARD_MULT;
-  planBattleRouteWaypoints(shipPos, goalPos, _routeObstacles, clearance, _routeWaypoints);
+  planBattleRouteWaypoints(shipPos, goalPos, obstacles, clearance, _routeWaypoints);
 
   const dt = BATTLE_ROUTE_PREVIEW_SEC / Math.max(1, maxPoints - 2);
   _routePos.copy(shipPos);
@@ -416,7 +423,7 @@ function fillShardAwareBattleRoutePositions(
 
     const prevDist = dist;
     _routePos.addScaledVector(_routeVel, dt);
-    nudgePointClearOfShardObstacles(_routePos, _routeObstacles, clearance, shipPos);
+    nudgePointClearOfShardObstacles(_routePos, obstacles, clearance, shipPos);
 
     if (wpIdx >= _routeWaypoints.length - 1) {
       if (_routePos.distanceTo(goalPos) > prevDist && _routeVel.dot(_routeToGoal) < 0) break;
@@ -617,12 +624,25 @@ export default class ShardFlightGame {
     this._battleHullScale = BATTLE_SHIP_HULL_SCALE_DEFAULT;
     this._battleEndHullScale = BATTLE_SHIP_HULL_SCALE_DEFAULT;
     this._preBattleShipScale = 1;
+    /** Cached at battle entry (field is frozen): static shard data, rebuilt once per session. */
+    /** @type {{ center: THREE.Vector3, radius: number }[]} ring obstacles for the route preview. */
+    this._battleRouteObstacles = [];
+    /** @type {{ center: THREE.Vector3, radius: number }[]} ring colliders (pre-shrunk) for hit tests. */
+    this._battleHitColliders = [];
+    /** Mean shard collider radius for the session. */
+    this._battleAvgShardR = 0;
+    /** Countdown (s) to the next route-line replan; 0 = replan on the next frame. */
+    this._battleRouteReplanTimer = 0;
     /** @type {THREE.Group | null} */
     this._goalMarker = null;
     /** @type {THREE.Group | null} */
-    this._battleRingBoundary = null;
-    this._battleRingInnerR = 0;
-    this._battleRingOuterR = 0;
+    this._battleTunnelBoundary = null;
+    /** Planet-local torus centerline + tube radii for the active ring tunnel. */
+    this._battleTunnelRingRadius = 0;
+    this._battleTunnelTubeRadius = 0;
+    /** Difficulty level (1 = outermost ring) and the band index it maps to. */
+    this._battleLevel = BATTLE_TUNNEL_LEVEL;
+    this._battleTunnelBandIndex = 0;
     this._bindChaseOrbitInput();
   }
 
@@ -729,15 +749,42 @@ export default class ShardFlightGame {
     this.hud.hideVictory?.();
     this.hud.setBattleModeActive?.(true);
 
+    this._battleLevel = BATTLE_TUNNEL_LEVEL;
+    this._battleTunnelBandIndex = levelToBandIndex(this._battleLevel, RING_PATTERN_BAND_FRACS);
+    this._battleHullScale = battleHullScaleForLevel(this._battleLevel);
     this._battleEndHullScale = this._battleHullScale;
     this._battleShipRadius = SHIP_RADIUS * this._battleHullScale;
-    computeBattleSpawnInShardField(
+
+    // Torus tunnel geometry (planet-local): divide world shard/ship radii by planet scale.
+    const planetScale = this._planetMeanScale();
+    const avgShardR = this.pyramidField.estimateAverageShardColliderRadius();
+    const tunnel = computeBattleTunnelGeometry(
+      this.pyramidField,
+      this._battleTunnelBandIndex,
+      avgShardR / planetScale,
+      this._battleShipRadius / planetScale,
+    );
+    this._battleTunnelRingRadius = tunnel.ringRadius;
+    this._battleTunnelTubeRadius = tunnel.tubeRadius;
+
+    this.planetMesh.getWorldPosition(_planetCenter);
+    collectRingTunnelShardAnchors(
+      this.pyramidField,
+      this.planetMesh,
+      this._battleTunnelRingRadius,
+      this._battleTunnelTubeRadius,
+      _battleAnchors,
+    );
+    computeBattleTunnelSpawn(
       this.planetMesh,
       this.pyramidField,
+      this._battleTunnelRingRadius,
+      this._battleTunnelTubeRadius,
       this._battleShipRadius,
       _battleEntryEndPos,
       _battleFieldDir,
     );
+
     const metrics = computeBattleShipMetrics(this.pyramidField);
     this._battleGoalRadius = metrics.goalRadius;
     this._battleGoalViewDist = metrics.goalViewDist;
@@ -746,8 +793,6 @@ export default class ShardFlightGame {
 
     _battleEntryStartPos.copy(this.ship.position);
     _battleEntryStartQuat.copy(this.ship.quaternion);
-    this.planetMesh.getWorldPosition(_planetCenter);
-    collectShardSpawnAnchors(this.pyramidField, _battleAnchors);
     computeBattleGoalAlongRing(
       _battleEntryEndPos,
       _planetCenter,
@@ -756,6 +801,7 @@ export default class ShardFlightGame {
       metrics.goalRadius,
       this._battleShipRadius * BATTLE_SPAWN_CLEARANCE_MULT,
       _battleGoalPos,
+      BATTLE_TUNNEL_GOAL_SHARD_STEPS,
     );
     _battleFieldDir.subVectors(_battleGoalPos, _battleEntryEndPos);
     if (_battleFieldDir.lengthSq() < 1e-8) {
@@ -781,10 +827,11 @@ export default class ShardFlightGame {
     this.ship.scale.setScalar(this._battleEndHullScale);
     this._battleMode = true;
     this._battleSpawnGraceRemaining = 0.55;
+    this._buildBattleColliderCache();
     this._syncAimFromShip();
     this._snapChaseCameraBehindShip();
     this._spawnBattleGoal();
-    this._spawnBattleRingBoundary();
+    this._spawnBattleTunnel();
     this._battleRouteLine.visible = true;
     this.hud.setThrottleVisible?.(true);
     this.hud.resetThrottle?.();
@@ -825,7 +872,7 @@ export default class ShardFlightGame {
     this._snapChaseCameraBehindShip();
     this._syncFlightCameraClip();
     this._disposeBattleGoal();
-    this._disposeBattleRingBoundary();
+    this._disposeBattleTunnel();
     this._battleRouteLine.visible = false;
     this.hud.setBattleModeActive?.(false);
     this.hud.setBattleShipSizeVisible?.(false);
@@ -841,32 +888,32 @@ export default class ShardFlightGame {
     );
   }
 
-  _spawnBattleRingBoundary() {
-    this._disposeBattleRingBoundary();
-    const { innerR, outerR, wallHeight } = computeBattleRingBoundaryRadii(this.pyramidField);
-    this._battleRingInnerR = innerR;
-    this._battleRingOuterR = outerR;
-    this._battleRingBoundary = buildBattleRingBoundaryMesh(innerR, outerR, wallHeight);
-    this.planetMesh.add(this._battleRingBoundary);
+  _spawnBattleTunnel() {
+    this._disposeBattleTunnel();
+    this._battleTunnelBoundary = buildBattleTunnelMesh(
+      this._battleTunnelRingRadius,
+      this._battleTunnelTubeRadius,
+    );
+    this.planetMesh.add(this._battleTunnelBoundary);
   }
 
-  _disposeBattleRingBoundary() {
-    if (!this._battleRingBoundary) return;
-    this.planetMesh.remove(this._battleRingBoundary);
-    disposeBattleRingBoundaryMesh(this._battleRingBoundary);
-    this._battleRingBoundary = null;
+  _disposeBattleTunnel() {
+    if (!this._battleTunnelBoundary) return;
+    this.planetMesh.remove(this._battleTunnelBoundary);
+    disposeBattleTunnelMesh(this._battleTunnelBoundary);
+    this._battleTunnelBoundary = null;
   }
 
   _checkBattleRingBoundary() {
     if (!this._battleMode || this.gameOver || this._battleWon) return;
     if (this._battleSpawnGraceRemaining > 0) return;
     if (
-      isShipOutsideBattleRingBoundaryWorld(
+      isShipOutsideBattleTunnelWorld(
         this.ship.position,
         this.planetMesh,
-        this._battleRingInnerR,
-        this._battleRingOuterR,
-        this._battleShipRadius,
+        this._battleTunnelRingRadius,
+        this._battleTunnelTubeRadius,
+        this._battleShipRadius / this._planetMeanScale(),
       )
     ) {
       this._triggerGameOver();
@@ -934,18 +981,23 @@ export default class ShardFlightGame {
     const ud = this._battleRouteLine.userData;
     const phase = (ud.pulsePhase += dt * BATTLE_ROUTE_PULSE_RATE);
     const mat = /** @type {THREE.LineBasicMaterial} */ (this._battleRouteLine.material);
-    mat.opacity = 0.38 + 0.52 * (0.5 + 0.5 * Math.sin(phase));
+    mat.opacity = 0.38 + 0.52 * (0.5 + 0.5 * Math.sin(phase)); // cheap pulse — every frame
+
+    // Replanning the shard-skirting route is the heavy battle compute; throttle it (the line is a
+    // slow-moving preview). Opacity still pulses smoothly above; the geometry holds between replans.
+    this._battleRouteReplanTimer -= dt;
+    if (this._battleRouteReplanTimer > 0) return;
+    this._battleRouteReplanTimer = BATTLE_ROUTE_REPLAN_INTERVAL;
 
     const attr = this._battleRouteLine.geometry.attributes.position;
-    const avgShardR = this.pyramidField.estimateAverageShardColliderRadius();
     const pointCount = fillShardAwareBattleRoutePositions(
       this.ship.position,
       this.velocity,
       _battleGoalPos,
       this.fuel,
       this._battleShipRadius,
-      avgShardR,
-      this.pyramidField,
+      this._battleAvgShardR,
+      this._battleRouteObstacles,
       attr.array,
       BATTLE_ROUTE_MAX_POINTS,
     );
@@ -1136,16 +1188,19 @@ export default class ShardFlightGame {
   }
 
   /**
-   * Gas-pedal integration: ramp up while held, decay while released. Linear so the slider
-   * visibly tracks at a constant rate; the rocket math downstream is what makes the actual
-   * acceleration feel curvy (mass-dependent a = F/m).
+   * Gas-pedal integration: snappy exponential ramp toward full while held, and a symmetric
+   * exponential fall back toward 0 while released — same {@link THROTTLE_RAMP_RATE} both ways.
+   * The rocket math downstream (mass-dependent a = F/m) shapes the actual acceleration.
    * @param {number} dt
    */
   _updateThrottleFromPress(dt) {
+    const k = 1 - Math.exp(-THROTTLE_RAMP_RATE * dt);
     if (this._throttlePressed) {
-      this.throttle = Math.min(1, this.throttle + THROTTLE_RAMP_UP_PER_SEC * dt);
+      this.throttle += (1 - this.throttle) * k;
+      if (this.throttle > 0.999) this.throttle = 1;
     } else if (this.throttle > 0) {
-      this.throttle = Math.max(0, this.throttle - THROTTLE_DECAY_PER_SEC * dt);
+      this.throttle -= this.throttle * k;
+      if (this.throttle < 0.001) this.throttle = 0;
     }
   }
 
@@ -1258,7 +1313,7 @@ export default class ShardFlightGame {
     } else {
       const speed = this.velocity.length();
       const rate = CAM_FOLLOW_RATE + speed * CAM_FOLLOW_SPEED_MULT;
-      this.camera.position.lerp(_camWant);
+      this.camera.position.lerp(_camWant, 1 - Math.exp(-rate * dt));
     }
     this.camera.lookAt(target);
   }
@@ -1495,6 +1550,42 @@ export default class ShardFlightGame {
     }
   }
 
+  /**
+   * Cache the ring-tunnel shard colliders once at battle entry. The field is frozen during battle
+   * (sim paused + primary hub spin paused + orbit disabled), so shard world positions are static —
+   * re-collecting them every frame churned hundreds of object/Vector3 allocations and matrix
+   * inversions, which was the source of the battle-only frame spikes. Hit radii are pre-shrunk so
+   * {@link _checkShardHit} is a flat sphere-overlap loop.
+   */
+  _buildBattleColliderCache() {
+    this.planetMesh.updateWorldMatrix(true, true);
+    _battleWorldToLocal.copy(this.planetMesh.matrixWorld).invert();
+    const ringR = this._battleTunnelRingRadius;
+    const tubeR = this._battleTunnelTubeRadius;
+    /** @type {{ center: THREE.Vector3, radius: number }[]} */
+    const route = [];
+    /** @type {{ center: THREE.Vector3, radius: number }[]} */
+    const hits = [];
+    let sum = 0;
+    let n = 0;
+    this.pyramidField.forEachBattleShardCollider(({ centerWorld, radius, fragmentIndex }) => {
+      sum += radius;
+      n += 1;
+      _battleShardLocal.copy(centerWorld).applyMatrix4(_battleWorldToLocal);
+      if (!isInRingTunnelLocal(_battleShardLocal, ringR, tubeR)) return;
+      route.push({ center: centerWorld.clone(), radius });
+      hits.push({
+        center: centerWorld.clone(),
+        radius: battleShardHitRadius(radius, fragmentIndex),
+      });
+    });
+    this._battleRouteObstacles = route;
+    this._battleHitColliders = hits;
+    this._battleAvgShardR =
+      n > 0 ? sum / n : this.pyramidField.estimateAverageShardColliderRadius();
+    this._battleRouteReplanTimer = 0; // replan the preview line on the first battle frame
+  }
+
   _checkShardHit(dt) {
     if (!this._battleMode || this.gameOver || this._battleWon) return;
     if (this._battleSpawnGraceRemaining > 0) {
@@ -1503,17 +1594,16 @@ export default class ShardFlightGame {
     }
     const shipPos = this.ship.position;
     const shipR = this._battleShipRadius * BATTLE_HIT_SHIP_RADIUS_MULT;
-    let hit = false;
-    this.pyramidField.forEachBattleShardCollider(
-      ({ centerWorld, radius, fragmentIndex }) => {
-        if (hit) return;
-        const shardR = battleShardHitRadius(radius, fragmentIndex);
-        if (spheresOverlap(shipPos, shipR, centerWorld, shardR)) {
-          hit = true;
-        }
-      },
-    );
-    if (hit) this._triggerGameOver();
+    // Colliders are cached once at battle entry (the field is frozen), so this is a plain
+    // sphere-overlap loop — no per-frame collider iteration, matrix inversions, or allocations.
+    const colliders = this._battleHitColliders;
+    for (let i = 0; i < colliders.length; i++) {
+      const c = colliders[i];
+      if (spheresOverlap(shipPos, shipR, c.center, c.radius)) {
+        this._triggerGameOver();
+        return;
+      }
+    }
   }
 
   /** Fallback when the ship sits on the shell without crossing inward this frame. */
@@ -1773,11 +1863,11 @@ export default class ShardFlightGame {
     if (!this.gameOver && !this._battleWon) {
       this._updateThrottleFromPress(dt);
       if (this._battleMode || this._battleEntryActive) this._syncFlightCameraClip();
-      this._updateChaseCamera(dt);
       this._turnShip(dt);
       this._syncAimFromShip();
       this._integrateShip(dt);
       this._clampShell();
+      this._updateChaseCamera(dt);
       if (this._battleMode) {
         this._checkShardHit(dt);
         this._checkBattleRingBoundary();

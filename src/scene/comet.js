@@ -241,9 +241,10 @@ export default class Comet {
 
   _emitTrailPuff(headWorld, antiSun, b) {
     const i = this._trailEmitCount;
-    if (i >= this._trailSprites.length) {
-      this._createTrailSprite();
-    }
+    // Fixed-size ring buffer: reuse the oldest sprite slot instead of growing the pool forever.
+    // (Previously this allocated a new Sprite + SpriteMaterial on every emit past the pool and
+    // never recycled, so sprite count, draw calls, and the fade loop grew without bound.)
+    const slot = i % this._trailSprites.length;
     this._trailEmitCount = i + 1;
 
     const k = THREE.MathUtils.clamp(this._trailBeatResponsiveness, 0, 1);
@@ -271,14 +272,14 @@ export default class Comet {
       .addScaledVector(antiSun, behind)
       .addScaledVector(this._perpScratch, lateral);
 
-    const sprite = this._trailSprites[i];
+    const sprite = this._trailSprites[slot];
     sprite.position.copy(this._puffScratch);
     sprite.scale.set(sx, sy, 1);
     sprite.material.rotation = Math.atan2(antiSun.y, antiSun.x) + (Math.random() - 0.5) * 0.4;
     sprite.material.color.copy(this._trailColorNear).lerp(this._trailColorFar, tail);
     const peak = bTrail * this._trailOpacity * this._solarFlux;
-    this._trailSpriteAges[i] = 0;
-    this._trailSpritePeak[i] = peak;
+    this._trailSpriteAges[slot] = 0;
+    this._trailSpritePeak[slot] = peak;
     sprite.material.opacity = peak;
     sprite.renderOrder = Math.max(0, this.headRenderOrder - 1);
     sprite.visible = true;
@@ -286,7 +287,9 @@ export default class Comet {
 
   _fadeTrailSprites(dt) {
     const rate = Math.max(0, this.trailFadeRate);
-    for (let i = 0; i < this._trailEmitCount; i++) {
+    // Bounded by the pool now that emission recycles slots (was unbounded `_trailEmitCount`).
+    const active = Math.min(this._trailEmitCount, this._trailSprites.length);
+    for (let i = 0; i < active; i++) {
       this._trailSpriteAges[i] += dt;
       const fade = rate <= 0 ? 1 : Math.exp(-rate * this._trailSpriteAges[i]);
       const opacity = this._trailSpritePeak[i] * fade;
@@ -296,7 +299,14 @@ export default class Comet {
     }
   }
 
-  update(dt) {
+  /**
+   * @param {number} dt
+   * @param {{ emitTrail?: boolean }} [opts] — emit a trail puff this call. The scene sub-steps
+   *   `update()` (up to ~200×/frame after a hitch) to keep motion smooth; trail emission must
+   *   NOT be sub-stepped or the trail density (and per-frame work) scales with the substep count.
+   *   Pass `true` only on the final substep so exactly one puff is emitted per frame.
+   */
+  update(dt, { emitTrail = true } = {}) {
     if (!this.motionPaused) {
       this._angle += dt * this.speed;
     }
@@ -320,8 +330,10 @@ export default class Comet {
     }
 
     if (this._trailSprites.length) {
-      const antiSun = this._antiSunFrom(pos);
-      this._emitTrailPuff(pos, antiSun, b);
+      if (emitTrail) {
+        const antiSun = this._antiSunFrom(pos);
+        this._emitTrailPuff(pos, antiSun, b);
+      }
       this._fadeTrailSprites(dt);
     }
   }
