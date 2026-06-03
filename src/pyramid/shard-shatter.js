@@ -187,6 +187,11 @@ export default class ShardShatter {
     this._pools = this._createPools(maxShards, material);
   }
 
+  /** Fragment InstancedMesh pools (collision-debug overlays clone their instance matrices). */
+  get poolMeshes() {
+    return this._pools.map((p) => p.mesh);
+  }
+
   _createPools(maxShards, material) {
     const fragGeo = makeFragmentGeometry();
     return FRAGMENTS_PER_LEVEL.map((fragCount) => {

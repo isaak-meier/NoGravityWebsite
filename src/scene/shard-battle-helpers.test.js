@@ -281,6 +281,16 @@ describe('computeBattleTunnelGeometry', () => {
     const big = computeBattleTunnelGeometry(field, band, 0.12, 0).tubeRadius;
     expect(big).toBeGreaterThan(small);
   });
+
+  it('decouples hazard membership from the wall tube (hazard >= tube, still in-band)', () => {
+    const band = levelToBandIndex(1);
+    const { tubeRadius, hazardRadius } = computeBattleTunnelGeometry(field, band, 0.05, 0.01);
+    const neighborGap = Math.abs(
+      RING_PATTERN_BAND_FRACS[band] - RING_PATTERN_BAND_FRACS[band - 1],
+    ) * 5;
+    expect(hazardRadius).toBeGreaterThanOrEqual(tubeRadius - 1e-9);
+    expect(hazardRadius).toBeLessThanOrEqual(neighborGap * 0.5 + 1e-9);
+  });
 });
 
 describe('torus tunnel membership + wall', () => {

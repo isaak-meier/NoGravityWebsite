@@ -150,6 +150,25 @@ export default class PyramidField {
     this._simulationPaused = !!paused;
   }
 
+  /** Battle collision debug: the fragment InstancedMesh pools (empty until shattered). */
+  getShatterPoolMeshes() {
+    return this._shatter?.poolMeshes ?? [];
+  }
+
+  /**
+   * Render shards fully opaque (battle) vs the default translucent look. The material is shared
+   * across intact shards and the fragment pools, so this affects every shard at once.
+   * @param {boolean} opaque
+   */
+  setShardsOpaque(opaque) {
+    const m = this.material;
+    if (!m) return;
+    m.transparent = !opaque;
+    m.opacity = opaque ? 1 : 0.9;
+    m.depthWrite = true;
+    m.needsUpdate = true;
+  }
+
   /**
    * Shatter the field into the ring pattern and hold fragments at the formed pose (battle mode).
    * Call while simulation is still running; then {@link setSimulationPaused}(true) to freeze.

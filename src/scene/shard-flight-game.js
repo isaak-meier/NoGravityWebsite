@@ -14,7 +14,6 @@ import {
 import {
   computeBattleShipMetrics,
   computeBattleGoalAhead,
-  computeBattleGoalAlongRing,
   computeBattleOrientationTowardGoal,
   buildBattleGoalMarker,
   planBattleRouteWaypoints,
@@ -25,16 +24,15 @@ import {
   buildBattleTunnelMesh,
   disposeBattleTunnelMesh,
   isShipOutsideBattleTunnelWorld,
-  collectRingTunnelShardAnchors,
   computeBattleTunnelSpawn,
+  computeBattleTunnelGoalAhead,
   isInRingTunnelLocal,
   BATTLE_TUNNEL_LEVEL,
-  BATTLE_TUNNEL_GOAL_SHARD_STEPS,
+  BATTLE_TUNNEL_GOAL_ARC,
   BATTLE_SHIP_HULL_SCALE_MIN,
   BATTLE_SHIP_HULL_SCALE_MAX,
   BATTLE_SHIP_HULL_SCALE_DEFAULT,
   BATTLE_ROUTE_CLEARANCE_SHARD_MULT,
-  BATTLE_SPAWN_CLEARANCE_MULT,
   battleShardHitRadius,
   BATTLE_HIT_SHIP_RADIUS_MULT,
 } from "./shard-battle-helpers.js";
@@ -61,6 +59,8 @@ const BATTLE_ROUTE_PREVIEW_SEC = 2.8;
 const BATTLE_ROUTE_PULSE_RATE = 3.6;
 /** Seconds between shard-aware route replans — the heavy battle compute, throttled to ~12 Hz. */
 const BATTLE_ROUTE_REPLAN_INTERVAL = 1 / 12;
+/** Draw wireframe spheres for the actual hit colliders (shards, ship, goal) to verify collisions. */
+const BATTLE_COLLISION_DEBUG = true;
 /** Yaw rate for A / D (rad/s, world +Y). */
 const SHIP_YAW_RATE = 1.15;
 /** Pitch rate for W / S (rad/s, ship-local right). */
@@ -115,7 +115,8 @@ const SHIP_FUEL_MAX = 16.0;
  * burns the mass drops and accel climbs — the characteristic "rocket builds
  * up" curve Tsiolkovsky describes.
  */
-const SHIP_MAX_THRUST = 28.0;
+// Lowered from 28 for a gentler throttle (the comment's example ratios use the old 28).
+const SHIP_MAX_THRUST = 16.0;
 /**
  * Booster pulse thrust (one click). ≈7× the sustained max — modelled on
  * solid-fuel afterburner stages whose thrust dwarfs the main engine for a
@@ -220,8 +221,6 @@ const _routeVel = new THREE.Vector3();
 const _routeToGoal = new THREE.Vector3();
 /** @type {THREE.Vector3[]} */
 const _routeWaypoints = [];
-/** @type {import('./shard-battle-helpers.js').ShardSpawnAnchor[]} */
-const _battleAnchors = [];
 const _battleEntryStartPos = new THREE.Vector3();
 const _battleEntryEndPos = new THREE.Vector3();
 const _battleEntryStartQuat = new THREE.Quaternion();
@@ -633,13 +632,24 @@ export default class ShardFlightGame {
     this._battleAvgShardR = 0;
     /** Countdown (s) to the next route-line replan; 0 = replan on the next frame. */
     this._battleRouteReplanTimer = 0;
+    /** Collision debug (BATTLE_COLLISION_DEBUG): wireframe hit spheres, rebuilt per battle. */
+    /** @type {THREE.Group | null} */
+    this._battleDebugGroup = null;
+    /** @type {THREE.Mesh | null} */
+    this._battleDebugShipSphere = null;
+    /** @type {THREE.BufferGeometry[]} */
+    this._battleDebugGeos = [];
+    /** @type {THREE.Material[]} */
+    this._battleDebugMats = [];
     /** @type {THREE.Group | null} */
     this._goalMarker = null;
     /** @type {THREE.Group | null} */
     this._battleTunnelBoundary = null;
-    /** Planet-local torus centerline + tube radii for the active ring tunnel. */
+    /** Planet-local torus centerline + wall-tube radii for the active ring tunnel. */
     this._battleTunnelRingRadius = 0;
     this._battleTunnelTubeRadius = 0;
+    /** Planet-local hazard radius (collision membership), decoupled from the wall tube. */
+    this._battleTunnelHazardRadius = 0;
     /** Difficulty level (1 = outermost ring) and the band index it maps to. */
     this._battleLevel = BATTLE_TUNNEL_LEVEL;
     this._battleTunnelBandIndex = 0;
@@ -717,14 +727,15 @@ export default class ShardFlightGame {
 
   _spawnBattleGoal() {
     this._disposeBattleGoal();
-    const avgR = this.pyramidField.estimateAverageShardColliderRadius();
-    this._goalMarker = buildBattleGoalMarker(avgR);
+    // Build the marker at the actual pickup radius so the visual matches the (larger) hit sphere.
+    this._goalMarker = buildBattleGoalMarker(this._battleGoalRadius);
     this._goalMarker.position.copy(_battleGoalPos);
     this.scene.add(this._goalMarker);
   }
 
   _setBattleHubFrozen(frozen) {
     this.pyramidField.setSimulationPaused(frozen);
+    this.pyramidField.setShardsOpaque(frozen); // solid shards in battle, translucent otherwise
     if (typeof this.onHubSpinPausedChange === "function") {
       this.onHubSpinPausedChange(frozen);
     }
@@ -766,20 +777,14 @@ export default class ShardFlightGame {
     );
     this._battleTunnelRingRadius = tunnel.ringRadius;
     this._battleTunnelTubeRadius = tunnel.tubeRadius;
+    this._battleTunnelHazardRadius = tunnel.hazardRadius;
 
-    this.planetMesh.getWorldPosition(_planetCenter);
-    collectRingTunnelShardAnchors(
-      this.pyramidField,
-      this.planetMesh,
-      this._battleTunnelRingRadius,
-      this._battleTunnelTubeRadius,
-      _battleAnchors,
-    );
+    // Spawn membership (which shards block the spawn) uses the hazard radius, not the wall tube.
     computeBattleTunnelSpawn(
       this.planetMesh,
       this.pyramidField,
       this._battleTunnelRingRadius,
-      this._battleTunnelTubeRadius,
+      this._battleTunnelHazardRadius,
       this._battleShipRadius,
       _battleEntryEndPos,
       _battleFieldDir,
@@ -793,15 +798,13 @@ export default class ShardFlightGame {
 
     _battleEntryStartPos.copy(this.ship.position);
     _battleEntryStartQuat.copy(this.ship.quaternion);
-    computeBattleGoalAlongRing(
+    // Goal a short arc straight ahead of the ship (tunable via BATTLE_TUNNEL_GOAL_ARC).
+    computeBattleTunnelGoalAhead(
+      this.planetMesh,
+      this._battleTunnelRingRadius,
       _battleEntryEndPos,
-      _planetCenter,
-      _battleAnchors,
-      this.pyramidField,
-      metrics.goalRadius,
-      this._battleShipRadius * BATTLE_SPAWN_CLEARANCE_MULT,
+      BATTLE_TUNNEL_GOAL_ARC,
       _battleGoalPos,
-      BATTLE_TUNNEL_GOAL_SHARD_STEPS,
     );
     _battleFieldDir.subVectors(_battleGoalPos, _battleEntryEndPos);
     if (_battleFieldDir.lengthSq() < 1e-8) {
@@ -832,9 +835,16 @@ export default class ShardFlightGame {
     this._snapChaseCameraBehindShip();
     this._spawnBattleGoal();
     this._spawnBattleTunnel();
+    this._buildBattleCollisionDebug();
     this._battleRouteLine.visible = true;
     this.hud.setThrottleVisible?.(true);
     this.hud.resetThrottle?.();
+    if (BATTLE_COLLISION_DEBUG) {
+      console.log(
+        `[battle] goal ${this.ship.position.distanceTo(_battleGoalPos).toFixed(3)} ahead`,
+        `· goal r ${this._battleGoalRadius.toFixed(3)} · ship r ${this._battleShipRadius.toFixed(5)}`,
+      );
+    }
   }
 
   _updateBattleEntry(dt) {
@@ -873,6 +883,7 @@ export default class ShardFlightGame {
     this._syncFlightCameraClip();
     this._disposeBattleGoal();
     this._disposeBattleTunnel();
+    this._disposeBattleCollisionDebug();
     this._battleRouteLine.visible = false;
     this.hud.setBattleModeActive?.(false);
     this.hud.setBattleShipSizeVisible?.(false);
@@ -1561,7 +1572,8 @@ export default class ShardFlightGame {
     this.planetMesh.updateWorldMatrix(true, true);
     _battleWorldToLocal.copy(this.planetMesh.matrixWorld).invert();
     const ringR = this._battleTunnelRingRadius;
-    const tubeR = this._battleTunnelTubeRadius;
+    // Hazard membership (not the wall tube): every ring shard the ship could reach stays lethal.
+    const tubeR = this._battleTunnelHazardRadius;
     /** @type {{ center: THREE.Vector3, radius: number }[]} */
     const route = [];
     /** @type {{ center: THREE.Vector3, radius: number }[]} */
@@ -1584,6 +1596,98 @@ export default class ShardFlightGame {
     this._battleAvgShardR =
       n > 0 ? sum / n : this.pyramidField.estimateAverageShardColliderRadius();
     this._battleRouteReplanTimer = 0; // replan the preview line on the first battle frame
+  }
+
+  /**
+   * Collision debug overlay. Ring-shard hazards are drawn as wireframe clones of the actual
+   * fragment InstancedMesh pools — reusing the shards' own geometry and per-instance matrices, so
+   * they overlap the real shards 1-to-1 (only the in-tunnel fragments, matching the hit set). The
+   * ship and goal are spheres because those collisions are genuinely spherical. Gated by
+   * {@link BATTLE_COLLISION_DEBUG}.
+   */
+  _buildBattleCollisionDebug() {
+    this._disposeBattleCollisionDebug();
+    if (!BATTLE_COLLISION_DEBUG) return;
+
+    const sphereGeo = new THREE.SphereGeometry(1, 12, 8);
+    const mkMat = (color, opacity) =>
+      new THREE.MeshBasicMaterial({
+        color,
+        wireframe: true,
+        transparent: true,
+        opacity,
+        depthTest: false,
+        toneMapped: false,
+      });
+    const shardMat = mkMat(0xff3344, 0.7);
+    const shipMat = mkMat(0x67e8f9, 0.9);
+    const goalMat = mkMat(0x4ade80, 0.6);
+
+    const group = new THREE.Group();
+    group.name = "battleCollisionDebug";
+
+    // Clone each fragment pool's instances (ring-filtered) as a wireframe overlay placed in the
+    // pool's world frame — exact 1-to-1 with the shards.
+    this.planetMesh.updateWorldMatrix(true, true);
+    _battleWorldToLocal.copy(this.planetMesh.matrixWorld).invert();
+    const ringR = this._battleTunnelRingRadius;
+    const hazardR = this._battleTunnelHazardRadius;
+    const m = new THREE.Matrix4();
+    for (const src of this.pyramidField.getShatterPoolMeshes()) {
+      if (!src.count) continue;
+      src.updateWorldMatrix(true, false);
+      const clone = new THREE.InstancedMesh(src.geometry, shardMat, src.count);
+      let j = 0;
+      for (let i = 0; i < src.count; i++) {
+        src.getMatrixAt(i, m);
+        _battleShardLocal.setFromMatrixPosition(m).applyMatrix4(src.matrixWorld);
+        _battleShardLocal.applyMatrix4(_battleWorldToLocal);
+        if (!isInRingTunnelLocal(_battleShardLocal, ringR, hazardR)) continue;
+        clone.setMatrixAt(j++, m);
+      }
+      clone.count = j;
+      clone.instanceMatrix.needsUpdate = true;
+      clone.matrixAutoUpdate = false;
+      clone.matrix.copy(src.matrixWorld);
+      clone.matrixWorldNeedsUpdate = true;
+      clone.frustumCulled = false;
+      clone.renderOrder = 30;
+      group.add(clone);
+    }
+
+    const shipSphere = new THREE.Mesh(sphereGeo, shipMat);
+    shipSphere.scale.setScalar(this._battleShipRadius * BATTLE_HIT_SHIP_RADIUS_MULT);
+    shipSphere.position.copy(this.ship.position);
+    shipSphere.renderOrder = 31;
+    shipSphere.frustumCulled = false;
+    group.add(shipSphere);
+
+    const goalSphere = new THREE.Mesh(sphereGeo, goalMat);
+    goalSphere.scale.setScalar(this._battleGoalRadius);
+    goalSphere.position.copy(_battleGoalPos);
+    goalSphere.renderOrder = 31;
+    goalSphere.frustumCulled = false;
+    group.add(goalSphere);
+
+    this._battleDebugGeos = [sphereGeo]; // pool geometries are shared — never dispose them here
+    this._battleDebugMats = [shardMat, shipMat, goalMat];
+    this._battleDebugShipSphere = shipSphere;
+    this._battleDebugGroup = group;
+    this.scene.add(group);
+  }
+
+  _disposeBattleCollisionDebug() {
+    if (!this._battleDebugGroup) return;
+    this.scene.remove(this._battleDebugGroup);
+    this._battleDebugGroup.traverse((o) => {
+      if (o.isInstancedMesh) o.dispose(); // frees the clone's instance buffer, not the shared geo
+    });
+    for (const g of this._battleDebugGeos) g.dispose();
+    for (const mat of this._battleDebugMats) mat.dispose();
+    this._battleDebugGroup = null;
+    this._battleDebugShipSphere = null;
+    this._battleDebugGeos = [];
+    this._battleDebugMats = [];
   }
 
   _checkShardHit(dt) {
@@ -1876,6 +1980,9 @@ export default class ShardFlightGame {
         this._updateBattleRouteLine(dt);
         if (this._goalMarker) {
           this._goalMarker.position.copy(_battleGoalPos);
+        }
+        if (this._battleDebugShipSphere) {
+          this._battleDebugShipSphere.position.copy(this.ship.position);
         }
       } else {
         this._checkBluePlanetLandingTrigger();

@@ -10,8 +10,8 @@ import {
 export const BATTLE_GOAL_VIEW_DIST_MULT = 2.8;
 /** Place the goal this many pyramid gaps ahead along the ring (inside the shard field). */
 export const BATTLE_GOAL_SHARD_STEPS_AHEAD = 10;
-/** Goal pickup sphere radius as a multiple of average shard collider radius (~one shard). */
-export const GOAL_RADIUS_SHARD_MULT = 1;
+/** Goal pickup sphere radius as a multiple of average shard collider radius (bigger = easier to spot/hit). */
+export const GOAL_RADIUS_SHARD_MULT = 1.5;
 /** Extra world-space gap between goal portal extent and shard collider surfaces. */
 export const BATTLE_GOAL_SHARD_PAD_MULT = 0.4;
 /** Route preview: extra clearance beyond ship radius when skirting shard colliders. */
@@ -46,21 +46,31 @@ export const BATTLE_SPAWN_SHELL_SAMPLES = 44;
  */
 export const BATTLE_ROUTE_MAX_PLAN_DEPTH = 7;
 /** Battle hull scale slider range (ship Group.scale; flight mode ≈ 1). */
-export const BATTLE_SHIP_HULL_SCALE_MIN = 0.0004;
+export const BATTLE_SHIP_HULL_SCALE_MIN = 0.0002;
 export const BATTLE_SHIP_HULL_SCALE_MAX = 0.0022;
 export const BATTLE_SHIP_HULL_SCALE_DEFAULT = 0.0008;
 
 // ─── Ring-tunnel battle (fly inside one shard ring) ──────────────────────────
 /** Active tunnel level: 1 = outermost ring (easiest); higher levels step inward (harder). */
 export const BATTLE_TUNNEL_LEVEL = 1;
-/** Goal sits this many shard gaps along the ring from spawn (tunable; grows in later levels). */
-export const BATTLE_TUNNEL_GOAL_SHARD_STEPS = 2;
-/** Tube minor radius = shard enclosure + ship radius × this (fly room inside the tunnel). */
-export const SHIP_TUBE_CLEARANCE_MULT = 2.5;
+/** Goal sits this many shard gaps along the ring from spawn (legacy gap-based placement). */
+export const BATTLE_TUNNEL_GOAL_SHARD_STEPS = 1;
+/**
+ * Goal arc distance ahead of the ship along the ring centerline (planet-local units). This is how
+ * far in front of the ship the goal spawns — small = right in front. Floor ≈ the goal radius, or
+ * the ship overlaps it at spawn and instantly wins.
+ */
+export const BATTLE_TUNNEL_GOAL_ARC = 0.5;
+/** Wall-tube ship clearance: shard enclosure + ship radius × this. Tight so the ship must thread
+ *  azimuthal gaps rather than fly radially/vertically around a shard. */
+export const SHIP_TUBE_CLEARANCE_MULT = 1.0;
+/** Hazard membership pad (× avg shard radius) beyond the shard enclosure. Independent of the wall
+ *  tube so tightening the wall never turns a visible ring shard into a non-lethal phantom. */
+export const BATTLE_TUNNEL_HAZARD_PAD_MULT = 0.5;
 /** Ship-radius pad when testing the lethal torus wall (planet-local units). */
 export const BATTLE_TUNNEL_WALL_PAD_MULT = 1.0;
 /** Per-level ship hull scale (index = level − 1); inner rings get a smaller ship for tighter gaps. */
-export const BATTLE_TUNNEL_HULL_SCALE_BY_LEVEL = [0.00062, 0.00055, 0.00048, 0.00043, 0.0004];
+export const BATTLE_TUNNEL_HULL_SCALE_BY_LEVEL = [0.00031, 0.000275, 0.00024, 0.000215, 0.0002];
 
 const _scratch = new THREE.Vector3();
 const _planetCenter = new THREE.Vector3();
@@ -968,11 +978,17 @@ export function battleHullScaleForLevel(level) {
  * so other rings' shards remain outside the tunnel.
  *
  * All lengths are planet-local — callers divide world shard/ship radii by the mean planet scale.
+ *
+ * Returns two radii, decoupled on purpose:
+ *  - `tubeRadius`   — the lethal wall: snug around the shards + a little ship room.
+ *  - `hazardRadius` — collision membership (which shards are obstacles): generous, never smaller
+ *    than the wall, so tightening the wall can't leave a visible ring shard non-lethal.
+ *
  * @param {import('../pyramid/pyramid-field.js').default} pyramidField
  * @param {number} bandIndex
  * @param {number} [avgShardRLocal]
  * @param {number} [shipRLocal]
- * @returns {{ ringRadius: number, tubeRadius: number }}
+ * @returns {{ ringRadius: number, tubeRadius: number, hazardRadius: number }}
  */
 export function computeBattleTunnelGeometry(
   pyramidField,
@@ -994,9 +1010,8 @@ export function computeBattleTunnelGeometry(
   const radialHalf = jRadK * orbit * 0.5 + avgShardRLocal;
   const verticalHalf = jYK * orbit * 0.5 + avgShardRLocal;
   const shardEnclose = Math.hypot(radialHalf, verticalHalf);
-  const desiredTube = shardEnclose + shipRLocal * SHIP_TUBE_CLEARANCE_MULT;
 
-  // Fractional distance to the nearest existing neighbouring band (inner and/or outer).
+  // Upper bound (band midline) so neither radius reaches the nearest neighbouring band's shards.
   let neighborFracGap = Infinity;
   if (bi - 1 >= 0) {
     neighborFracGap = Math.min(neighborFracGap, Math.abs(fracs[bi - 1] - fracs[bi]));
@@ -1004,18 +1019,27 @@ export function computeBattleTunnelGeometry(
   if (bi + 1 < fracs.length) {
     neighborFracGap = Math.min(neighborFracGap, Math.abs(fracs[bi + 1] - fracs[bi]));
   }
+  const neighborCap = Number.isFinite(neighborFracGap)
+    ? neighborFracGap * orbit * ringScale * 0.5 - jRadK * orbit * 0.5 - avgShardRLocal
+    : Infinity;
 
-  let tubeRadius = desiredTube;
-  if (Number.isFinite(neighborFracGap)) {
-    const neighborGap = neighborFracGap * orbit * ringScale;
-    // Barrier at the band midline keeps neighbour shards out; never collapse below the shards.
-    const maxTube = Math.max(
-      neighborGap * 0.5 - jRadK * orbit * 0.5 - avgShardRLocal,
-      shardEnclose + shipRLocal * 0.5,
-    );
-    tubeRadius = Math.min(desiredTube, maxTube);
-  }
-  return { ringRadius, tubeRadius };
+  // Wall tube — snug, never collapsing below the shard envelope.
+  const tubeFloor = shardEnclose + shipRLocal * 0.5;
+  const desiredTube = shardEnclose + shipRLocal * SHIP_TUBE_CLEARANCE_MULT;
+  const tubeRadius = Number.isFinite(neighborCap)
+    ? Math.min(desiredTube, Math.max(neighborCap, tubeFloor))
+    : desiredTube;
+
+  // Hazard membership — generous, but never smaller than the wall and never past the neighbour band.
+  const desiredHazard = Math.max(
+    tubeRadius,
+    shardEnclose + avgShardRLocal * BATTLE_TUNNEL_HAZARD_PAD_MULT,
+  );
+  const hazardRadius = Number.isFinite(neighborCap)
+    ? Math.min(desiredHazard, Math.max(neighborCap, tubeRadius))
+    : desiredHazard;
+
+  return { ringRadius, tubeRadius, hazardRadius };
 }
 
 /**
@@ -1153,7 +1177,7 @@ export function collectRingTunnelShardObstacles(
  * @param {import('three').Mesh} planetMesh
  * @param {import('../pyramid/pyramid-field.js').default} pyramidField
  * @param {number} ringRadius — planet-local centerline radius
- * @param {number} tubeRadius — planet-local tube minor radius (membership filter)
+ * @param {number} membershipRadius — planet-local hazard radius (which shards count as obstacles)
  * @param {number} shipRadius — battle ship collision radius (world units)
  * @param {import('three').Vector3} outEntry
  * @param {import('three').Vector3} outFieldDir
@@ -1162,7 +1186,7 @@ export function computeBattleTunnelSpawn(
   planetMesh,
   pyramidField,
   ringRadius,
-  tubeRadius,
+  membershipRadius,
   shipRadius,
   outEntry,
   outFieldDir,
@@ -1172,7 +1196,7 @@ export function computeBattleTunnelSpawn(
     pyramidField,
     planetMesh,
     ringRadius,
-    tubeRadius,
+    membershipRadius,
     _spawnObstacles,
   );
 
@@ -1203,6 +1227,25 @@ export function computeBattleTunnelSpawn(
   outFieldDir.subVectors(_localTan, outEntry);
   if (outFieldDir.lengthSq() < 1e-8) outFieldDir.set(0, 0, -1);
   outFieldDir.normalize();
+}
+
+/**
+ * Place the goal a short arc ahead of the ship along the ring centerline (planet-local), in the
+ * +azimuth travel direction (matching the spawn heading). Keeps the goal right in front of the
+ * ship rather than a full shard gap away. Outputs a world position.
+ * @param {import('three').Mesh} planetMesh
+ * @param {number} ringRadius — planet-local centerline radius
+ * @param {import('three').Vector3} shipWorldPos
+ * @param {number} arcDistance — planet-local arc length ahead of the ship
+ * @param {import('three').Vector3} outGoal
+ */
+export function computeBattleTunnelGoalAhead(planetMesh, ringRadius, shipWorldPos, arcDistance, outGoal) {
+  planetMesh.updateWorldMatrix(true, true);
+  _scratch.copy(shipWorldPos);
+  planetMesh.worldToLocal(_scratch);
+  const theta = Math.atan2(_scratch.z, _scratch.x) + arcDistance / Math.max(ringRadius, 1e-6);
+  outGoal.set(Math.cos(theta) * ringRadius, 0, Math.sin(theta) * ringRadius);
+  planetMesh.localToWorld(outGoal);
 }
 
 function portalLayerMaterial(color, opacity, additive = false) {
