@@ -1001,6 +1001,82 @@ function isCameraInsideAnyPlanet(pos, planets) {
   return false;
 }
 
+// --- Shard flight mini-game (hidden entry: ?game) --------------------------
+
+/**
+ * Builds the shard flight HUD + game and auto-starts it on desktop.
+ * Only called when the SHARD_FLIGHT_GAME flag is on (URL has `?game`).
+ */
+function mountShardFlight({
+  container, isMobile, camera, scene, camCtrl, pyramidField, sphere, planetParams, primary, solarSystem,
+}) {
+  /** @type {import("./shard-flight-game.js").default | null} */
+  let shardFlight = null;
+  const tryStartShardFlight = () => {
+    if (isMobile) return;
+    if (isCameraInsideAnyPlanet(camera.position, solarSystem.planets)) return;
+    shardFlight?.enter();
+  };
+  const shardFlightHud = createShardFlightHud(container, {
+    isMobile,
+    onStartFlight: tryStartShardFlight,
+    onRestart: () => {
+      shardFlight?.restart();
+    },
+    onExitFlight: () => {
+      shardFlight?.exit(primary);
+    },
+    onThrottleChange: (v) => {
+      shardFlight?.setThrottle(v);
+    },
+    onThrottlePress: () => {
+      shardFlight?.setThrottlePressed(true);
+    },
+    onThrottleRelease: () => {
+      shardFlight?.setThrottlePressed(false);
+    },
+    onBattleToggle: () => {
+      if (!shardFlight?.active) return;
+      if (shardFlight.isBattleMode()) shardFlight.exitBattleMode();
+      else shardFlight.enterBattleMode();
+    },
+    onBattleShipSizeChange: (hullScale) => {
+      shardFlight?.setBattleShipHullScale(hullScale);
+    },
+  });
+  container.appendChild(shardFlightHud.root);
+
+  shardFlight = new ShardFlightGame({
+    scene,
+    camera,
+    camCtrl,
+    pyramidField,
+    planetMesh: sphere,
+    getPlanetRadius: () => planetParams.radius,
+    bluePlanet: solarSystem.planets[0],
+    landingPlanet: solarSystem.planets[0],
+    onLandingComplete: (detail) => {
+      const landedShip = shardFlight?.ship;
+      shardFlight?.exit(primary, { retainShip: true });
+      if (detail?.planet?.mesh && landedShip) {
+        camCtrl.snapToLandedShipView(
+          detail.planet,
+          landedShip,
+          detail.surfaceNormal,
+          detail.shipVisualScale,
+        );
+      } else {
+        camCtrl.lockToPlanetWithoutIntro(solarSystem.planets[0]);
+      }
+    },
+    container,
+    hud: shardFlightHud,
+    onHubSpinPausedChange: (paused) => solarSystem.setPrimaryHubSpinPaused(paused),
+  });
+  tryStartShardFlight();
+  return { shardFlight, shardFlightHud };
+}
+
 // --- Scene initialization -------------------------------------------------
 
 function initScene() {
@@ -1328,68 +1404,13 @@ function initScene() {
 
   /** @type {import("./shard-flight-game.js").default | null} */
   let shardFlight = null;
-  const tryStartShardFlight = () => {
-    if (isMobile) return;
-    if (isCameraInsideAnyPlanet(camera.position, solarSystem.planets)) return;
-    shardFlight?.enter();
-  };
-  const shardFlightHud = createShardFlightHud(container, {
-    isMobile,
-    onStartFlight: tryStartShardFlight,
-    onRestart: () => {
-      shardFlight?.restart();
-    },
-    onExitFlight: () => {
-      shardFlight?.exit(primary);
-    },
-    onThrottleChange: (v) => {
-      shardFlight?.setThrottle(v);
-    },
-    onThrottlePress: () => {
-      shardFlight?.setThrottlePressed(true);
-    },
-    onThrottleRelease: () => {
-      shardFlight?.setThrottlePressed(false);
-    },
-    onBattleToggle: () => {
-      if (!shardFlight?.active) return;
-      if (shardFlight.isBattleMode()) shardFlight.exitBattleMode();
-      else shardFlight.enterBattleMode();
-    },
-    onBattleShipSizeChange: (hullScale) => {
-      shardFlight?.setBattleShipHullScale(hullScale);
-    },
-  });
-  container.appendChild(shardFlightHud.root);
-
-  shardFlight = new ShardFlightGame({
-    scene,
-    camera,
-    camCtrl,
-    pyramidField,
-    planetMesh: sphere,
-    getPlanetRadius: () => planetParams.radius,
-    bluePlanet: solarSystem.planets[0],
-    landingPlanet: solarSystem.planets[0],
-    onLandingComplete: (detail) => {
-      const landedShip = shardFlight?.ship;
-      shardFlight?.exit(primary, { retainShip: true });
-      if (detail?.planet?.mesh && landedShip) {
-        camCtrl.snapToLandedShipView(
-          detail.planet,
-          landedShip,
-          detail.surfaceNormal,
-          detail.shipVisualScale,
-        );
-      } else {
-        camCtrl.lockToPlanetWithoutIntro(solarSystem.planets[0]);
-      }
-    },
-    container,
-    hud: shardFlightHud,
-    onHubSpinPausedChange: (paused) => solarSystem.setPrimaryHubSpinPaused(paused),
-  });
-  tryStartShardFlight();
+  /** @type {ReturnType<typeof createShardFlightHud> | null} */
+  let shardFlightHud = null;
+  if (isEnabled("SHARD_FLIGHT_GAME")) {
+    ({ shardFlight, shardFlightHud } = mountShardFlight({
+      container, isMobile, camera, scene, camCtrl, pyramidField, sphere, planetParams, primary, solarSystem,
+    }));
+  }
 
   const cameraDistanceHud = document.createElement("div");
   cameraDistanceHud.className = "camera-distance-hud";
@@ -1409,7 +1430,7 @@ function initScene() {
     comet,
     camCtrl,
   });
-  planetSwitcher.root.appendChild(shardFlightHud.flightButton);
+  if (shardFlightHud) planetSwitcher.root.appendChild(shardFlightHud.flightButton);
   container.appendChild(planetSwitcher.root);
 
   const planetGoopOverlay = document.createElement("div");

@@ -2,6 +2,22 @@
 // flags can be toggled at runtime via setFlag (useful for tests) or
 // configured based on environment variables during build.
 
+/**
+ * Hidden entry for the shard flight mini-game: only on when the page URL has `?game`
+ * (e.g. https://nxgrxvity.com/?game). Regular visitors never see it.
+ * @param {string} [search]
+ * @returns {boolean}
+ */
+export function hasGameUrlParam(search = typeof window !== "undefined" ? window.location.search : "") {
+  try {
+    return new URLSearchParams(search).has("game");
+  } catch {
+    return false;
+  }
+}
+
+const GAME_URL = hasGameUrlParam();
+
 const FLAGS = {
   // Always on so production deploys match dev (no NODE_ENV gating).
   // Tests can still call setFlag to simulate disabled state.
@@ -14,8 +30,13 @@ const FLAGS = {
    * Turn off before shipping (Blue at origin remains {@link SolarSystem#primary} for pyramids / HUD).
    */
   DEV_START_ON_RED_PLANET: true,
-  /** First Google Drive track loads and plays on load when a folder is configured. */
-  AUTOPLAY_FIRST_DRIVE_TRACK_ON_LOAD: false,
+  /**
+   * First Google Drive track loads and plays on load when a folder is configured.
+   * Off in game mode (`?game`), matching the shard-flight branch; on for the normal site.
+   */
+  AUTOPLAY_FIRST_DRIVE_TRACK_ON_LOAD: !GAME_URL,
+  /** Shard flight mini-game (HUD, flight button, auto-start on desktop). Hidden unless `?game`. */
+  SHARD_FLIGHT_GAME: GAME_URL,
   /** Dev: treat the app as offline (music toast, Drive load errors). Toggle in GUI → Dev. */
   MOCK_OFFLINE: false,
 };

@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, it, expect, beforeEach } from 'vitest';
-import FLAGS, { isEnabled, setFlag } from './feature-flags.js';
+import FLAGS, { isEnabled, setFlag, hasGameUrlParam } from './feature-flags.js';
 
 describe('feature-flags', () => {
   // ── isEnabled ──────────────────────────────────────────────────────────
@@ -106,3 +106,19 @@ describe('feature-flags', () => {
 
 // need afterEach from vitest
 import { afterEach } from 'vitest';
+
+describe('hidden game entry (hasGameUrlParam / SHARD_FLIGHT_GAME)', () => {
+  it('is true only when the query has ?game', () => {
+    expect(hasGameUrlParam('?game')).toBe(true);
+    expect(hasGameUrlParam('?game=1&x=2')).toBe(true);
+    expect(hasGameUrlParam('?x=2&game')).toBe(true);
+    expect(hasGameUrlParam('')).toBe(false);
+    expect(hasGameUrlParam('?games=1')).toBe(false);
+  });
+
+  it('keeps the game hidden and music autoplay on for a normal page load', () => {
+    // the jsdom test page has no ?game in its URL
+    expect(isEnabled('SHARD_FLIGHT_GAME')).toBe(false);
+    expect(isEnabled('AUTOPLAY_FIRST_DRIVE_TRACK_ON_LOAD')).toBe(true);
+  });
+});
