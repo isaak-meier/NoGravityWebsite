@@ -620,6 +620,22 @@ describe('three-scene helpers', () => {
       expect(sphere.scale.setScalar).toHaveBeenCalledWith(expect.closeTo(smoothedScale, 4));
     });
 
+    it('holds the planet scale when freezeScale is set (shard-flight battle)', () => {
+      const planetParams = { radius: 1 };
+      const radiusCtrl = { updateDisplay: vi.fn() };
+      const bloomPass = { strength: 0, threshold: 0 };
+      const material = { reflectivity: 0 };
+      const sphere = { scale: { x: 1, setScalar: vi.fn() } };
+      const spectrum = new Float32Array([1, 1, 1, 0.5, 0.5, 0, 0]);
+      applySpectrumToParams(spectrum, {
+        planetParams, radiusCtrl, bloomPass, bloomBaseline, material, sphere, baseRadius: 1,
+        freezeScale: true,
+      });
+      expect(sphere.scale.setScalar).not.toHaveBeenCalled();
+      expect(planetParams.radius).toBe(1);
+      expect(bloomPass.strength).toBeCloseTo(0.75 * 3);
+    });
+
     it('updates bloom strength from mid frequency average', () => {
       const planetParams = { radius: 1 };
       const radiusCtrl = { updateDisplay: vi.fn() };

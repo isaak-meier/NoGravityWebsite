@@ -1288,6 +1288,7 @@ function initScene() {
       material,
       sphere,
       baseRadius,
+      freezeScale: solarSystem.primaryHubSpinPaused,
     });
 
     const beatInfo = beatDetector.update(spectrum);
@@ -1592,7 +1593,7 @@ function updateBloomStrengthFromSpectrum(ctx, target) {
 
 function applySpectrumToParams(
   spectrum,
-  { planetParams, radiusCtrl, bloomPass, bloomBaseline, bloomSmooth, material, sphere, baseRadius }
+  { planetParams, radiusCtrl, bloomPass, bloomBaseline, bloomSmooth, material, sphere, baseRadius, freezeScale = false }
 ) {
   const len = spectrum.length;
   const third = Math.floor(len / 3);
@@ -1605,14 +1606,17 @@ function applySpectrumToParams(
   const midAvg = avg(mid);
   const highAvg = avg(high);
 
-  const { smoothedScale, displayRadius } = computeSmoothedPlanetScale(
-    lowAvg,
-    baseRadius,
-    sphere.scale.x,
-  );
-  planetParams.radius = displayRadius;
-  sphere.scale.setScalar(smoothedScale);
-  if (radiusCtrl) radiusCtrl.updateDisplay();
+  // Shard-flight battle: hold the planet size so the tunnel + shard colliders stay put.
+  if (!freezeScale) {
+    const { smoothedScale, displayRadius } = computeSmoothedPlanetScale(
+      lowAvg,
+      baseRadius,
+      sphere.scale.x,
+    );
+    planetParams.radius = displayRadius;
+    sphere.scale.setScalar(smoothedScale);
+    if (radiusCtrl) radiusCtrl.updateDisplay();
+  }
 
   const baseline_multiplier = bloomBaseline?.multiplier ?? 1;
   const bloomTarget = midAvg * 3 * baseline_multiplier;

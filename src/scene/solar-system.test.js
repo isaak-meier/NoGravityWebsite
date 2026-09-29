@@ -237,9 +237,11 @@ describe('SolarSystem', () => {
       ss.update(1);
       const frozenY = ss.planets[0].mesh.rotation.y;
       ss.setPrimaryHubSpinPaused(true);
+      expect(ss.primaryHubSpinPaused).toBe(true);
       ss.update(1);
       expect(ss.planets[0].mesh.rotation.y).toBe(frozenY);
       ss.setPrimaryHubSpinPaused(false);
+      expect(ss.primaryHubSpinPaused).toBe(false);
       ss.update(1);
       expect(ss.planets[0].mesh.rotation.y).not.toBe(frozenY);
     });
