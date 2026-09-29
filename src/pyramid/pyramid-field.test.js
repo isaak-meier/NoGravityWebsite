@@ -372,7 +372,7 @@ describe('PyramidField', () => {
       expect(addCalls).toContain('patternMode');
     });
 
-    it('opens the folder by default', () => {
+    it('leaves the folder collapsed (relies on the parent gui closeFolders default)', () => {
       const pf = new PyramidField({ count: 1 });
       const mockFolder = {
         add: vi.fn().mockReturnValue({ name: vi.fn().mockReturnValue({ onChange: vi.fn() }) }),
@@ -381,7 +381,7 @@ describe('PyramidField', () => {
       };
       const mockGui = { addFolder: vi.fn(() => mockFolder) };
       pf.setupGUI(mockGui);
-      expect(mockFolder.open).toHaveBeenCalled();
+      expect(mockFolder.open).not.toHaveBeenCalled();
     });
 
     it('returns the folder', () => {
@@ -482,6 +482,15 @@ describe('PyramidField', () => {
     it('triggerManualShatter starts a wave like _triggerShatter', () => {
       const pf = new PyramidField({ count: 8, shatterAmount: 0.9 });
       pf.triggerManualShatter();
+      expect(pf._shards.some((_, i) => pf._shatter.isShattered(i))).toBe(true);
+    });
+
+    it('prepareRingPatternForBattle shatters into ring and holds pattern pose', () => {
+      const pf = new PyramidField({ count: 8, shatterAmount: 0.9 });
+      pf.prepareRingPatternForBattle();
+      expect(pf.config.patternMode).toBe(PATTERN_RING);
+      expect(pf._patternCoordinator.patternId).toBe(PATTERN_RING);
+      expect(pf._patternCoordinator.finalized).toBe(true);
       expect(pf._shards.some((_, i) => pf._shatter.isShattered(i))).toBe(true);
     });
 

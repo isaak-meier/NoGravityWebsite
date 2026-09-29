@@ -708,17 +708,25 @@ describe('CameraController', () => {
       mesh.position.set(2000, 0, 0);
       const planet = { mesh, def: { radius: 1 } };
       ctrl._beginGraphZoomToPlanet(planet);
-      // Right after kick-off, the tween has captured start/end orientations and the camera has not
-      // moved or rotated yet — only an explicit update should change pose.
       expect(ctrl._enterPlanetTween.startQuat).toBeDefined();
       expect(ctrl._enterPlanetTween.endQuat).toBeDefined();
       expect(cam.quaternion.angleTo(startQuat)).toBeLessThan(1e-6);
-      // Step the tween a tiny fraction; orientation should barely move (slerp), NOT instantly snap
-      // to face the picked planet (which would be ~PI/2 away).
       ctrl._enterPlanetTween.elapsed = ctrl._enterPlanetTween.duration * 0.02;
       ctrl._updateEnterPlanetAnimation(0);
       const angleAfterTinyStep = cam.quaternion.angleTo(startQuat);
       expect(angleAfterTinyStep).toBeLessThan(0.3);
+    });
+
+    it('does not re-lock follow when shardFlightMode is true and followPlanet is null', () => {
+      const c = makeContainer();
+      const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 30000);
+      const ctrl = new CameraController(c, cam);
+      const fake = { mesh: new THREE.Mesh(), def: { radius: 1 } };
+      ctrl._fallbackFollowPlanet = fake;
+      ctrl.followPlanet = null;
+      ctrl.shardFlightMode = true;
+      ctrl.update(0.016);
+      expect(ctrl.followPlanet).toBeNull();
     });
   });
 });

@@ -232,6 +232,18 @@ describe('SolarSystem', () => {
       expect(ss.planets[0].mesh.rotation.y).not.toBe(initY);
     });
 
+    it('setPrimaryHubSpinPaused holds the blue hub mesh angle', () => {
+      const ss = new SolarSystem(false);
+      ss.update(1);
+      const frozenY = ss.planets[0].mesh.rotation.y;
+      ss.setPrimaryHubSpinPaused(true);
+      ss.update(1);
+      expect(ss.planets[0].mesh.rotation.y).toBe(frozenY);
+      ss.setPrimaryHubSpinPaused(false);
+      ss.update(1);
+      expect(ss.planets[0].mesh.rotation.y).not.toBe(frozenY);
+    });
+
     it('rotates star field', () => {
       const ss = new SolarSystem(false);
       const initY = ss.starField.rotation.y;

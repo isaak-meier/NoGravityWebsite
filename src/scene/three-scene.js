@@ -26,11 +26,7 @@ import CameraController from "./camera-controller.js";
 import AudioManager from "./audio-manager.js";
 import Comet from "./comet.js";
 import BeatDetector from "../audio/beat-detector.js";
-import {
-  decodeAudioBufferFromUrl,
-  findTopLoudestBarChunkIndices,
-  mixAudioBufferToMono,
-} from "../audio/laser-chunk-analysis.js";
+import { decodeAudioBufferFromUrl } from "../audio/laser-chunk-analysis.js";
 import {
   computeSmoothedPlanetScale,
 } from "./planet-pulse.js";
@@ -40,6 +36,8 @@ import { createPlanetMailingPanel } from "../ui/planet-mailing-panel.js";
 import { createPlanetSongPromoPanel } from "../ui/planet-song-promo-panel.js";
 import { createGreenPlanetFadeHandles } from "../ui/green-planet-fade-handles.js";
 import { createPlanetSwitcher } from "../ui/planet-switcher.js";
+import ShardFlightGame from "./shard-flight-game.js";
+import { createShardFlightHud } from "../ui/shard-flight-hud.js";
 import { createAuthClient } from "../auth/auth-client.js";
 import { createAuthUI } from "../auth/auth-ui.js";
 import { attachMobileControlPanel } from "../ui/mobile-control-panel.js";
@@ -393,8 +391,6 @@ function setupTitleGUI(gui) {
 
   folder.addColor(params, 'color').name('Accent Color')
     .onChange(() => { updateShadow(); updateGradient(); });
-
-  folder.open();
 }
 
 function setupCameraGUI(gui, state, camera) {
@@ -620,6 +616,8 @@ function createAudioState() {
     fft: null,
     audioEl: null,
     _liveStream: null,
+    /** Set when page hides while audio is playing; cleared after resume or stop. */
+    _resumePlaybackWhenVisible: false,
     /** @type {'idle' | 'loading' | 'error' | 'ready'} */
     _musicLoadPhase: "idle",
     _musicLoadOffline: false,
@@ -628,7 +626,75 @@ function createAudioState() {
   };
 }
 
+/** @param {ReturnType<typeof createAudioState>} audioState */
+function isAudioPlaybackActive(audioState) {
+  if (audioState._liveStream) return !!audioState.stream;
+  return !!audioState.audioEl && !audioState.audioEl.paused;
+}
+
+/** @param {ReturnType<typeof createAudioState>} audioState */
+function pauseAudioForPageHidden(audioState) {
+  if (!isAudioPlaybackActive(audioState)) {
+    audioState._resumePlaybackWhenVisible = false;
+    return;
+  }
+  audioState._resumePlaybackWhenVisible = true;
+  if (audioState.audioEl) {
+    try {
+      audioState.audioEl.pause();
+    } catch (_) {}
+  }
+  if (audioState.stream) audioState.stream.stop();
+}
+
+/** @param {ReturnType<typeof createAudioState>} audioState */
+async function resumeAudioForPageVisible(audioState) {
+  if (!audioState._resumePlaybackWhenVisible) return;
+  audioState._resumePlaybackWhenVisible = false;
+  if (audioState.fft?.context?.state === "suspended") {
+    try {
+      await audioState.fft.context.resume();
+    } catch (err) {
+      console.warn("AudioContext resume after visibility failed:", err);
+    }
+  }
+  if (audioState.audioEl) {
+    try {
+      await audioState.audioEl.play();
+    } catch (err) {
+      console.warn("Audio resume after visibility failed:", err);
+      return;
+    }
+  }
+  if (audioState.stream) audioState.stream.start();
+}
+
+/**
+ * Pause file/live playback when the tab or in-app browser is hidden; restore if it was playing.
+ * @param {ReturnType<typeof createAudioState>} audioState
+ * @param {() => void} [onPlaybackChange] - e.g. sync music/mic toggles
+ * @returns {() => void} remove visibility listener
+ */
+function setupAudioVisibilityHandling(audioState, onPlaybackChange) {
+  if (typeof document === "undefined") return () => {};
+
+  const onVisibilityChange = () => {
+    if (document.hidden) {
+      pauseAudioForPageHidden(audioState);
+      onPlaybackChange?.();
+      return;
+    }
+    void resumeAudioForPageVisible(audioState).then(() => {
+      onPlaybackChange?.();
+    });
+  };
+
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+}
+
 function stopAudio(audioState) {
+  audioState._resumePlaybackWhenVisible = false;
   if (audioState.stream) {
     audioState.stream.stop();
     audioState.stream = null;
@@ -992,42 +1058,75 @@ function initScene() {
   const audioState = createAudioState();
 
   let graphLaserDecodeGen = 0;
-  let graphLaserDecodedBuffer = null;
+  let graphLaserDecoded = false;
+  let graphLaserDecodedDuration = 0;
   let graphLaserLastAppliedBarDur = 0;
+  /** True while an 'analyze' request is in flight — avoids flooding the worker each frame. */
+  let graphLaserAnalyzePending = false;
+
+  // The loudest-bar-windows analysis (full-song mono mix + RMS scan) runs in a worker so it never
+  // blocks the render thread, even when it re-fires on bar-duration drift mid-playback. Guarded so
+  // it degrades gracefully where Worker is unavailable (e.g. the jsdom test env) — the lasers just
+  // don't gate to hot chunks.
+  let graphLaserWorker = null;
+  if (typeof Worker !== "undefined") {
+    try {
+      graphLaserWorker = new Worker(
+        new URL("../audio/laser-chunk-worker.js", import.meta.url),
+        { type: "module" },
+      );
+      graphLaserWorker.onmessage = (e) => {
+        const msg = e.data;
+        if (!msg || msg.type !== "result") return;
+        graphLaserAnalyzePending = false;
+        if (msg.gen !== graphLaserDecodeGen) return; // result for a replaced track
+        solarSystem.setGraphLaserHotChunkIndices(
+          msg.indices && msg.indices.length > 0 ? msg.indices : [],
+        );
+      };
+    } catch (err) {
+      console.warn("Graph laser worker unavailable; hot-chunk lasers disabled:", err);
+      graphLaserWorker = null;
+    }
+  }
 
   function invalidateGraphLaserChunkState() {
     graphLaserDecodeGen++;
-    graphLaserDecodedBuffer = null;
+    graphLaserDecoded = false;
+    graphLaserDecodedDuration = 0;
     graphLaserLastAppliedBarDur = 0;
+    graphLaserAnalyzePending = false;
     solarSystem.setGraphLaserHotChunkIndices(null);
     return graphLaserDecodeGen;
   }
 
   function applyGraphLaserHotChunksFromDecoded(gen) {
-    if (gen !== graphLaserDecodeGen || !graphLaserDecodedBuffer || audioState._liveStream) return;
+    if (!graphLaserWorker) return;
+    if (gen !== graphLaserDecodeGen || !graphLaserDecoded || audioState._liveStream) return;
+    if (graphLaserAnalyzePending) return; // one analyze in flight at a time
     const el = audioState.audioEl;
     if (!el) return;
     const dur =
       Number.isFinite(el.duration) && el.duration > 0
         ? el.duration
-        : graphLaserDecodedBuffer.duration;
+        : graphLaserDecodedDuration;
     const bar = beatDetector.barDuration;
     if (!Number.isFinite(bar) || bar <= 1e-6 || !Number.isFinite(dur) || dur <= 0) return;
-    const mono = mixAudioBufferToMono(graphLaserDecodedBuffer);
-    const indices = findTopLoudestBarChunkIndices(
-      mono,
-      graphLaserDecodedBuffer.sampleRate,
-      dur,
-      bar,
-      16,
-      2,
-    );
-    if (gen !== graphLaserDecodeGen) return;
-    solarSystem.setGraphLaserHotChunkIndices(indices.length > 0 ? indices : []);
+    graphLaserAnalyzePending = true;
+    // Optimistic: stop onSpectrum re-posting every frame until the bar drifts again past threshold.
     graphLaserLastAppliedBarDur = bar;
+    graphLaserWorker.postMessage({
+      type: "analyze",
+      gen,
+      durationSec: dur,
+      barDurationSec: bar,
+      barsPerChunk: 16,
+      topK: 2,
+    });
   }
 
   async function runGraphLaserChunkDecodeAndApply(expectedGen) {
+    if (!graphLaserWorker) return; // no worker → skip decode entirely (feature disabled)
     const el = audioState.audioEl;
     const ctx = audioState.fft?.context;
     if (!el || !ctx || audioState._liveStream) return;
@@ -1036,7 +1135,27 @@ function initScene() {
     try {
       const buf = await decodeAudioBufferFromUrl(ctx, url);
       if (expectedGen !== graphLaserDecodeGen) return;
-      graphLaserDecodedBuffer = buf;
+      // Copy each channel into its own transferable buffer (copying, not transferring, the decoded
+      // AudioBuffer — detaching its data would corrupt it; the copy is a cheap memcpy vs the scan).
+      const channels = [];
+      const transfer = [];
+      for (let c = 0; c < buf.numberOfChannels; c++) {
+        const copy = buf.getChannelData(c).slice();
+        channels.push(copy.buffer);
+        transfer.push(copy.buffer);
+      }
+      graphLaserDecoded = true;
+      graphLaserDecodedDuration = buf.duration;
+      graphLaserWorker.postMessage(
+        {
+          type: "load",
+          gen: expectedGen,
+          channels,
+          length: buf.length,
+          sampleRate: buf.sampleRate,
+        },
+        transfer,
+      );
       applyGraphLaserHotChunksFromDecoded(expectedGen);
     } catch (err) {
       console.warn("Graph laser chunk decode failed:", err);
@@ -1101,7 +1220,7 @@ function initScene() {
     }
     solarSystem.tryTriggerRedPlanetOnBeat(beatInfo.isBeat);
 
-    if (!audioState._liveStream && graphLaserDecodedBuffer) {
+    if (!audioState._liveStream && graphLaserDecoded) {
       const bar = beatDetector.barDuration;
       if (Number.isFinite(bar) && bar > 1e-6) {
         const rel =
@@ -1141,6 +1260,7 @@ function initScene() {
     cockpit.syncMusicToggle();
     cockpit.syncMicToggle();
   };
+  setupAudioVisibilityHandling(audioState, syncMusicUi);
   const songPicker = setupSongPicker(
     controlsHost,
     audioState,
@@ -1206,6 +1326,71 @@ function initScene() {
   enterPlanetHud.appendChild(enterPlanetBtn);
   container.appendChild(enterPlanetHud);
 
+  /** @type {import("./shard-flight-game.js").default | null} */
+  let shardFlight = null;
+  const tryStartShardFlight = () => {
+    if (isMobile) return;
+    if (isCameraInsideAnyPlanet(camera.position, solarSystem.planets)) return;
+    shardFlight?.enter();
+  };
+  const shardFlightHud = createShardFlightHud(container, {
+    isMobile,
+    onStartFlight: tryStartShardFlight,
+    onRestart: () => {
+      shardFlight?.restart();
+    },
+    onExitFlight: () => {
+      shardFlight?.exit(primary);
+    },
+    onThrottleChange: (v) => {
+      shardFlight?.setThrottle(v);
+    },
+    onThrottlePress: () => {
+      shardFlight?.setThrottlePressed(true);
+    },
+    onThrottleRelease: () => {
+      shardFlight?.setThrottlePressed(false);
+    },
+    onBattleToggle: () => {
+      if (!shardFlight?.active) return;
+      if (shardFlight.isBattleMode()) shardFlight.exitBattleMode();
+      else shardFlight.enterBattleMode();
+    },
+    onBattleShipSizeChange: (hullScale) => {
+      shardFlight?.setBattleShipHullScale(hullScale);
+    },
+  });
+  container.appendChild(shardFlightHud.root);
+
+  shardFlight = new ShardFlightGame({
+    scene,
+    camera,
+    camCtrl,
+    pyramidField,
+    planetMesh: sphere,
+    getPlanetRadius: () => planetParams.radius,
+    bluePlanet: solarSystem.planets[0],
+    landingPlanet: solarSystem.planets[0],
+    onLandingComplete: (detail) => {
+      const landedShip = shardFlight?.ship;
+      shardFlight?.exit(primary, { retainShip: true });
+      if (detail?.planet?.mesh && landedShip) {
+        camCtrl.snapToLandedShipView(
+          detail.planet,
+          landedShip,
+          detail.surfaceNormal,
+          detail.shipVisualScale,
+        );
+      } else {
+        camCtrl.lockToPlanetWithoutIntro(solarSystem.planets[0]);
+      }
+    },
+    container,
+    hud: shardFlightHud,
+    onHubSpinPausedChange: (paused) => solarSystem.setPrimaryHubSpinPaused(paused),
+  });
+  tryStartShardFlight();
+
   const cameraDistanceHud = document.createElement("div");
   cameraDistanceHud.className = "camera-distance-hud";
   cameraDistanceHud.setAttribute("aria-live", "polite");
@@ -1224,6 +1409,7 @@ function initScene() {
     comet,
     camCtrl,
   });
+  planetSwitcher.root.appendChild(shardFlightHud.flightButton);
   container.appendChild(planetSwitcher.root);
 
   const planetGoopOverlay = document.createElement("div");
@@ -1302,7 +1488,9 @@ function initScene() {
     const cometSubsteps = Math.min(200, Math.max(1, Math.ceil(t / maxCometStep)));
     const cometDt = t / cometSubsteps;
     for (let si = 0; si < cometSubsteps; si++) {
-      comet.update(cometDt);
+      // Sub-step motion smoothly, but emit a trail puff only on the final substep so the trail
+      // (and its per-frame work) stays one-per-frame regardless of how many substeps run.
+      comet.update(cometDt, { emitTrail: si === cometSubsteps - 1 });
     }
     if (cometDevInspectOnce) {
       cometDevInspectOnce = false;
@@ -1318,6 +1506,7 @@ function initScene() {
       },
       { mesh: sphere, radius: planetParams.radius },
     );
+    shardFlight?.update(t);
     camCtrl.update(t);
     planetSwitcher.syncActive();
     const insidePlanet = isCameraInsideAnyPlanet(camera.position, solarSystem.planets);
@@ -1439,6 +1628,10 @@ export {
   applyPlanetBrightnessFromBloomDial,
   applySpectrumToParams,
   createAudioState,
+  isAudioPlaybackActive,
+  pauseAudioForPageHidden,
+  resumeAudioForPageVisible,
+  setupAudioVisibilityHandling,
   stopAudio,
   toggleAudioPlayback,
   createAudioElement,

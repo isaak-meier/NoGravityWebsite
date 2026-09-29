@@ -226,6 +226,30 @@ describe('ShardShatter', () => {
       expect(p0.distanceTo(p1)).toBeLessThan(1e-5);
     });
 
+    it('snapAllToPatternPhase sets t to T_PATTERN_END and applies transforms', () => {
+      const mat = new THREE.MeshStandardMaterial();
+      const coord = new FragmentPatternCoordinator();
+      coord.beginWave({
+        waveIndex: 1,
+        patternId: PATTERN_RING,
+        center: new THREE.Vector3(0, 0, 0),
+        params: { orbitRadius: 2 },
+      });
+      coord.registerShard(0, 18);
+      coord.finalizeWave();
+      const ss = new ShardShatter({
+        maxShards: 5,
+        material: mat,
+        patternCoordinator: coord,
+      });
+      const geo = makeConeGeo();
+      ss.registerShard(0, geo, new THREE.Vector3(0, 0, 1), ID_QUAT, 1);
+      ss.triggerShatter(0, 0.2);
+      expect(ss._shardStates.get(0).t).toBe(0);
+      ss.snapAllToPatternPhase();
+      expect(ss._shardStates.get(0).t).toBeCloseTo(T_PATTERN_END, 5);
+    });
+
     it('uses non-pattern motion and caps t at T_DRIFT_END for PATTERN_DRIFT (no return)', () => {
       const mat = new THREE.MeshStandardMaterial();
       const coord = new FragmentPatternCoordinator();

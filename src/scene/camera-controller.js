@@ -1,4 +1,10 @@
 import * as THREE from "three";
+import {
+  computeHorizonShipCameraPosition,
+  LANDED_HORIZON_CAM_SIDE,
+  LANDED_HORIZON_CAM_LIFT,
+  LANDED_ORBIT_DISTANCE_MULT,
+} from "./landed-ship-camera.js";
 
 /** Pixels of single-finger movement before we treat touchend as a drag, not a tap. */
 const TOUCH_TAP_MOVE_THRESHOLD_PX = 22;
@@ -59,6 +65,34 @@ const GRAPH_ZOOM_TWEEN_DURATION_SEC = 1.6;
 /** If |look-axis·worldY| exceeds this, skip upright look-at (near singularity over / under the pivot). */
 const ORBIT_ROLL_LOOKAT_SKIP_AXIS_Y = 0.986;
 
+/**
+ * Soft pole buffer. Every per-frame pitch input (orbit drag, shard-flight aim, desktop free cam)
+ * is multiplied by {@link poleBrake} so the camera direction asymptotically approaches but never
+ * reaches `±worldUp`. That keeps `lookAt` away from its `cross(forward, up) ≈ 0` singularity in
+ * every mode at once, replacing the per-mode hard clamps.
+ */
+export const POLE_BUFFER_EPSILON_RAD = (0.5 * Math.PI) / 180;
+/** Equivalent `|forward.y|` cap — the camera direction is held below this. */
+export const POLE_MAX_VERTICALITY = Math.cos(POLE_BUFFER_EPSILON_RAD);
+/** Higher = camera moves freely longer and brakes harder right before the pole. */
+const POLE_BRAKE_SHARPNESS = 8;
+
+/**
+ * Soft brake on pitch input near the world-up axis. Returns 1 when input would push the camera
+ * back toward the equator or when it's far from the pole; smoothly approaches 0 as the camera
+ * direction's `|y|` approaches {@link POLE_MAX_VERTICALITY} from below.
+ *
+ * @param {number} verticality signed current `dir.y` of the camera/aim direction (∈ [-1, 1]).
+ * @param {number} proposedDelta sign-meaningful intended change to `dir.y` if the input were
+ *   applied at full rate (only the sign matters; magnitude is fine to leave as the raw step).
+ * @returns {number} multiplier in [0, 1] to apply to the pitch input.
+ */
+export function poleBrake(verticality, proposedDelta) {
+  if (verticality * proposedDelta <= 0) return 1;
+  const ratio = Math.min(Math.abs(verticality) / POLE_MAX_VERTICALITY, 1);
+  return Math.max(0, 1 - ratio ** POLE_BRAKE_SHARPNESS);
+}
+
 const _worldUp = new THREE.Vector3(0, 1, 0);
 const _worldRight = new THREE.Vector3(1, 0, 0);
 const _zAxis = new THREE.Vector3(0, 0, 1);
@@ -110,6 +144,7 @@ function isUiTouchTarget(el) {
     (el.closest(".bottom-left-hud") ||
       el.closest(".enter-planet-hud") ||
       el.closest(".planet-switcher-hud") ||
+      el.closest(".shard-flight-hud") ||
       el.closest(".planet-interior-hud") ||
       el.closest(".screen-dials") ||
       el.closest(".lil-gui"))
@@ -166,6 +201,17 @@ class CameraController {
      * @type {null | { mesh: import('three').Mesh, def?: { radius?: number } }}
      */
     this._fallbackFollowPlanet = null;
+    /**
+     * When true, the scene runs shard flight each frame and drives the camera; orbit follow is suspended.
+     * @type {boolean}
+     */
+    this.shardFlightMode = false;
+    /** When true, orbit/zoom pivot is the landed ship (not the planet center). */
+    this._landedShipViewActive = false;
+    this._landedShipLookTarget = new THREE.Vector3();
+    /** @type {import('three').Object3D | null} */
+    this._landedShipPivot = null;
+    this._landedShipVisualScale = 1;
     this.mouseLookEnabled = true;
     this.sun = null;
     this.sunLight = null;
@@ -291,6 +337,7 @@ class CameraController {
       "wheel",
       (e) => {
         e.preventDefault();
+        if (this.shardFlightMode) return;
         this._ensureFollowLocked();
         if (this._graphMode) {
           const factor = Math.exp(e.deltaY * GRAPH_ORBIT_ZOOM_SENSITIVITY);
@@ -313,7 +360,10 @@ class CameraController {
             Math.max(FOLLOW_ORBIT_ZOOM_MIN, minBySurface),
             FOLLOW_ORBIT_ZOOM_MAX
           );
-          if (this._currentFollowOrbitDistance() >= GRAPH_MODE_DISTANCE_THRESHOLD) {
+          if (
+            !this._landedShipViewActive
+            && this._currentFollowOrbitDistance() >= GRAPH_MODE_DISTANCE_THRESHOLD
+          ) {
             this._enterGraphMode();
           }
           return;
@@ -416,7 +466,7 @@ class CameraController {
           this._orbitStart.y = e.touches[0].clientY;
           orbitLast = null;
           this._mobileTouchForward =
-            this.isMobile && !this.followPlanet && !this.followComet;
+            this.isMobile && !this.followPlanet && !this.followComet && !this.shardFlightMode;
         }
       },
       { passive: false }
@@ -453,7 +503,7 @@ class CameraController {
           const ody = t.clientY - this._orbitStart.y;
           if (odx * odx + ody * ody <= ORBIT_VS_FORWARD_PX * ORBIT_VS_FORWARD_PX) {
             this._mobileTouchForward =
-              this.isMobile && !this.followPlanet && !this.followComet;
+              this.isMobile && !this.followPlanet && !this.followComet && !this.shardFlightMode;
             return;
           }
           this._orbitUndecided = false;
@@ -486,7 +536,19 @@ class CameraController {
    * World-space pivot for follow / graph orbit drag (planet center, comet head, or graph centroid).
    * @param {import("three").Vector3} out
    */
+  /**
+   * @param {import('three').Vector3} out
+   * @returns {boolean} true when the landed-ship pivot is active
+   */
+  _fillLandedShipOrbitCenter(out) {
+    if (!this._landedShipViewActive || !this._landedShipPivot) return false;
+    this._landedShipPivot.getWorldPosition(out);
+    this._landedShipLookTarget.copy(out);
+    return true;
+  }
+
   _fillOrbitPivotForDrag(out) {
+    if (this._fillLandedShipOrbitCenter(out)) return;
     if (this._graphMode) {
       const t = this._lastFollowedPlanetForGraph;
       if (t?.mesh) {
@@ -607,7 +669,14 @@ class CameraController {
     const dir = graph ? this._graphOrbitDir : this._followOrbitDir;
 
     this._orbitScreenTangentBasis(this.camera, dir, _tRDrag, _tUDrag);
-    dir.applyAxisAngle(_tRDrag, -vert);
+    // Soft pole brake on the pitch component only. For a rotation around `_tRDrag` by angle θ,
+    // d(dir.y)/dθ = (_tRDrag × dir).y = _tRDrag.z·dir.x − _tRDrag.x·dir.z, so the sign of the
+    // proposed Δy is sign(pitchAngle · dyPerTheta). Yaw is left unbraked — near the pole only
+    // its meaning is ambiguous, not unstable.
+    const pitchAngle = -vert;
+    const dyPerTheta = _tRDrag.z * dir.x - _tRDrag.x * dir.z;
+    const brake = poleBrake(dir.y, pitchAngle * dyPerTheta);
+    dir.applyAxisAngle(_tRDrag, pitchAngle * brake);
     dir.applyAxisAngle(_tUDrag, -horiz);
     dir.normalize();
     this._syncOrbitAnglesFromDir(dir, graph);
@@ -618,6 +687,7 @@ class CameraController {
    * in that axis (see SWIPE_DEGREES_PER_FULL_DRAG). Planet follow uses FOLLOW_ORBIT_DRAG_*.
    */
   _applyTouchOrbit(dx, dy, container) {
+    if (this.shardFlightMode) return;
     const w = Math.max(container.clientWidth, 1);
     const h = Math.max(container.clientHeight, 1);
     const cam = this.camera;
@@ -688,6 +758,7 @@ class CameraController {
     );
 
     const runPick = (clientX, clientY) => {
+      if (this.shardFlightMode) return;
       const rect = dom.getBoundingClientRect();
       pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
@@ -791,6 +862,7 @@ class CameraController {
    * Suspended while graph view is active or a tween (enter-planet / graph-zoom) is running.
    */
   _ensureFollowLocked() {
+    if (this.shardFlightMode) return;
     if (this._graphMode) return;
     if (this._enterPlanetTween) return;
     if (this.followPlanet || this.followComet) return;
@@ -819,6 +891,8 @@ class CameraController {
    */
   lockToPlanetWithoutIntro(planet) {
     if (!planet?.mesh) return;
+    this._landedShipViewActive = false;
+    this._landedShipPivot = null;
     this._leaveGraphModeForExplicitSwitch();
     this._enterPlanetTween = null;
     this._enterPlanetInteriorHold = false;
@@ -835,7 +909,58 @@ class CameraController {
     this._lastFollowPlanet = planet;
   }
 
+  /**
+   * After shard-flight landing: orbit pivot is the ship; wheel/drag match planet follow.
+   * @param {{ mesh: import('three').Object3D }} planet — kept for picks / graph restore
+   * @param {import('three').Object3D} shipPivot — landed ship (world position updated each frame)
+   * @param {import('three').Vector3} surfaceNormal — outward from the planet at the pad
+   * @param {number} [shipVisualScale] — hull scale on the pad; scales camera offset + zoom floor
+   */
+  snapToLandedShipView(planet, shipPivot, surfaceNormal, shipVisualScale = 1) {
+    if (!planet?.mesh || !shipPivot) return;
+    this._leaveGraphModeForExplicitSwitch();
+    this._enterPlanetTween = null;
+    this._enterPlanetInteriorHold = false;
+    this.followComet = null;
+    this.followPlanet = planet;
+    this._introOrbitActive = false;
+    this._introOrbitElapsed = 0;
+    this.zoomActive = false;
+    this._landedShipPivot = shipPivot;
+    this._landedShipVisualScale = shipVisualScale > 1e-8 ? shipVisualScale : 1;
+    this._landedShipViewActive = true;
+    shipPivot.updateWorldMatrix(true, true);
+    shipPivot.getWorldPosition(this._landedShipLookTarget);
+    const scaleComp = this._landedShipVisualScale;
+    computeHorizonShipCameraPosition(
+      this._landedShipLookTarget,
+      surfaceNormal,
+      this.camera.position,
+      LANDED_HORIZON_CAM_SIDE * scaleComp,
+      LANDED_HORIZON_CAM_LIFT * scaleComp,
+    );
+    this.camera.lookAt(this._landedShipLookTarget);
+    this._followOrbitDir.subVectors(this.camera.position, this._landedShipLookTarget);
+    if (this._followOrbitDir.lengthSq() < 1e-10) {
+      this._followOrbitDir.set(0, 1, 0);
+    } else {
+      this._followOrbitDir.normalize();
+    }
+    this._followOrbitYaw = Math.atan2(this._followOrbitDir.x, this._followOrbitDir.z);
+    this._followOrbitPitch = Math.acos(
+      THREE.MathUtils.clamp(this._followOrbitDir.y, -1, 1),
+    );
+    this._syncFollowOrbitScaleFromCameraPosition();
+    this._followDistanceScale = Math.min(
+      FOLLOW_ORBIT_ZOOM_MAX,
+      this._followDistanceScale * LANDED_ORBIT_DISTANCE_MULT,
+    );
+    this._lastFollowPlanet = planet;
+  }
+
   beginFollowComet(comet) {
+    this._landedShipViewActive = false;
+    this._landedShipPivot = null;
     this._leaveGraphModeForExplicitSwitch();
     this._enterPlanetTween = null;
     this._enterPlanetInteriorHold = false;
@@ -860,7 +985,6 @@ class CameraController {
       this.zoomActive = true;
     });
     camFolder.add(this, "zoomSpeed", 0.005, 0.1).name("Zoom Speed");
-    camFolder.open();
   }
 
   /**
@@ -1214,8 +1338,13 @@ class CameraController {
   }
 
   update(dt) {
+    if (this.shardFlightMode) {
+      return;
+    }
     this._ensureFollowLocked();
     if (this.followPlanet !== this._lastFollowPlanet) {
+      this._landedShipViewActive = false;
+      this._landedShipPivot = null;
       if (this._lastFollowPlanet && !this.followPlanet) {
         this.mouseX = 0;
         this.mouseY = 0;
@@ -1300,6 +1429,10 @@ class CameraController {
     const offsetY = this.isMobile ? 8 : 5;
     const offsetZ = this.isMobile ? 20 : 12;
     const baseR = Math.hypot(offsetY, offsetZ);
+    if (this._landedShipViewActive) {
+      const shipPad = Math.max(0.05, this._landedShipVisualScale * 2.2);
+      return shipPad / baseR;
+    }
     const worldR = this._getFollowOrbitTargetWorldRadius();
     return (worldR + FOLLOW_ORBIT_SURFACE_MARGIN) / baseR;
   }
@@ -1324,7 +1457,9 @@ class CameraController {
   /** Sets `_followDistanceScale` from current camera distance to the active follow target (planet or comet). */
   _syncFollowOrbitScaleFromCameraPosition() {
     const orbitCenter = new THREE.Vector3();
-    if (this.followComet) {
+    if (this._fillLandedShipOrbitCenter(orbitCenter)) {
+      // landed ship pivot
+    } else if (this.followComet) {
       this.followComet.getHeadWorldPosition(orbitCenter);
     } else if (this.followPlanet?.mesh) {
       this.followPlanet.mesh.getWorldPosition(orbitCenter);
@@ -1352,12 +1487,14 @@ class CameraController {
   _updateFollow(dt) {
     const cam = this.camera;
     const orbitCenter = new THREE.Vector3();
-    if (this.followComet) {
-      this.followComet.getHeadWorldPosition(orbitCenter);
-    } else if (this.followPlanet?.mesh) {
-      this.followPlanet.mesh.getWorldPosition(orbitCenter);
-    } else {
-      return;
+    if (!this._fillLandedShipOrbitCenter(orbitCenter)) {
+      if (this.followComet) {
+        this.followComet.getHeadWorldPosition(orbitCenter);
+      } else if (this.followPlanet?.mesh) {
+        this.followPlanet.mesh.getWorldPosition(orbitCenter);
+      } else {
+        return;
+      }
     }
     if (this._enterPlanetInteriorHold) {
       cam.lookAt(orbitCenter);
@@ -1433,7 +1570,12 @@ class CameraController {
       const applyDeadzone = (v) =>
         Math.abs(v) < deadzone ? 0 : (v - Math.sign(v) * deadzone) / (1 - deadzone);
       cam.rotation.y -= applyDeadzone(this.mouseX) * panSpeed * dt;
-      cam.rotation.x -= applyDeadzone(this.mouseY) * panSpeed * dt;
+      // Soft pole brake on pitch only. With YXZ Euler order, forward.y = sin(rotation.x) and
+      // d(forward.y)/d(rotation.x) = cos(rotation.x) ≥ 0 throughout (-π/2, π/2), so the sign of
+      // the proposed Δy equals sign(pitchInput).
+      const pitchInput = -applyDeadzone(this.mouseY) * panSpeed * dt;
+      const pitchBrake = poleBrake(Math.sin(cam.rotation.x), pitchInput);
+      cam.rotation.x += pitchInput * pitchBrake;
     }
   }
 }

@@ -187,6 +187,11 @@ export default class ShardShatter {
     this._pools = this._createPools(maxShards, material);
   }
 
+  /** Fragment InstancedMesh pools (collision-debug overlays clone their instance matrices). */
+  get poolMeshes() {
+    return this._pools.map((p) => p.mesh);
+  }
+
   _createPools(maxShards, material) {
     const fragGeo = makeFragmentGeometry();
     return FRAGMENTS_PER_LEVEL.map((fragCount) => {
@@ -421,6 +426,46 @@ export default class ShardShatter {
 
   isShattered(index) {
     return this._shardStates.has(index);
+  }
+
+  /** Jump every active wave to the fully formed pattern pose (battle entry). */
+  snapAllToPatternPhase() {
+    for (const state of this._shardStates.values()) {
+      state.t = T_PATTERN_END;
+      this._applyTransforms(state);
+    }
+  }
+
+  /**
+   * World-space spheres for each visible fragment (instance matrix → world).
+   * @param {(o: { shardIndex: number, fragmentIndex: number, centerWorld: import('three').Vector3, radius: number }) => void} fn — `centerWorld` is reused; copy if needed.
+   */
+  forEachFragmentWorldCollider(fn) {
+    for (const [shardIndex, state] of this._shardStates) {
+      this.forEachShardFragmentWorldCollider(shardIndex, fn);
+    }
+  }
+
+  /**
+   * @param {number} shardIndex
+   * @param {(o: { shardIndex: number, fragmentIndex: number, centerWorld: import('three').Vector3, radius: number }) => void} fn
+   */
+  forEachShardFragmentWorldCollider(shardIndex, fn) {
+    const state = this._shardStates.get(shardIndex);
+    if (!state) return;
+    const pool = this._pools[state.levelIndex];
+    pool.mesh.updateWorldMatrix(true, false);
+    for (let fi = 0; fi < state.slots.length; fi++) {
+      pool.mesh.getMatrixAt(state.slots[fi], _mat4);
+      _fragPos.setFromMatrixPosition(_mat4);
+      _fragPos.applyMatrix4(pool.mesh.matrixWorld);
+      fn({
+        shardIndex,
+        fragmentIndex: fi,
+        centerWorld: _fragPos,
+        radius: state.radii[fi],
+      });
+    }
   }
 
   getReturnProgress(index) {

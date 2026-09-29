@@ -79,6 +79,10 @@ import {
   BLOOM_STRENGTH_SMOOTH_ALPHA,
   computeSmoothedPlanetScale,
   createAudioState,
+  isAudioPlaybackActive,
+  pauseAudioForPageHidden,
+  resumeAudioForPageVisible,
+  setupAudioVisibilityHandling,
   stopAudio,
   toggleAudioPlayback,
   createAudioElement,
@@ -835,7 +839,13 @@ describe('three-scene helpers', () => {
   describe('createAudioState', () => {
     it('returns object with null stream, fft, audioEl, and _liveStream', () => {
       const s = createAudioState();
-      expect(s).toEqual({ stream: null, fft: null, audioEl: null, _liveStream: null });
+      expect(s).toMatchObject({
+        stream: null,
+        fft: null,
+        audioEl: null,
+        _liveStream: null,
+        _resumePlaybackWhenVisible: false,
+      });
     });
 
     it('returns a fresh object each call', () => {
@@ -933,6 +943,122 @@ describe('three-scene helpers', () => {
       const state = { stream: null, fft, audioEl };
       await toggleAudioPlayback(state);
       expect(resume).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── visibility pause / resume ─────────────────────────────────────────
+
+  describe('isAudioPlaybackActive', () => {
+    it('is true when file audio is playing', () => {
+      const state = createAudioState();
+      state.audioEl = { paused: false };
+      expect(isAudioPlaybackActive(state)).toBe(true);
+    });
+
+    it('is false when file audio is paused', () => {
+      const state = createAudioState();
+      state.audioEl = { paused: true };
+      expect(isAudioPlaybackActive(state)).toBe(false);
+    });
+
+    it('is true when live stream has an active pump stream', () => {
+      const state = createAudioState();
+      state._liveStream = {};
+      state.stream = {};
+      expect(isAudioPlaybackActive(state)).toBe(true);
+    });
+  });
+
+  describe('pauseAudioForPageHidden / resumeAudioForPageVisible', () => {
+    it('pauses playing file audio and sets resume flag', () => {
+      const audioEl = { paused: false, pause: vi.fn() };
+      const stream = { stop: vi.fn(), start: vi.fn() };
+      const state = createAudioState();
+      state.audioEl = audioEl;
+      state.stream = stream;
+
+      pauseAudioForPageHidden(state);
+
+      expect(state._resumePlaybackWhenVisible).toBe(true);
+      expect(audioEl.pause).toHaveBeenCalled();
+      expect(stream.stop).toHaveBeenCalled();
+    });
+
+    it('does not set resume flag when already paused', () => {
+      const state = createAudioState();
+      state.audioEl = { paused: true, pause: vi.fn() };
+
+      pauseAudioForPageHidden(state);
+
+      expect(state._resumePlaybackWhenVisible).toBe(false);
+      expect(state.audioEl.pause).not.toHaveBeenCalled();
+    });
+
+    it('resumes file audio when flag was set', async () => {
+      const resume = vi.fn().mockResolvedValue(undefined);
+      const audioEl = { paused: true, play: vi.fn().mockResolvedValue(undefined) };
+      const stream = { start: vi.fn() };
+      const state = createAudioState();
+      state._resumePlaybackWhenVisible = true;
+      state.audioEl = audioEl;
+      state.stream = stream;
+      state.fft = { context: { state: 'suspended', resume } };
+
+      await resumeAudioForPageVisible(state);
+
+      expect(state._resumePlaybackWhenVisible).toBe(false);
+      expect(resume).toHaveBeenCalled();
+      expect(audioEl.play).toHaveBeenCalled();
+      expect(stream.start).toHaveBeenCalled();
+    });
+
+    it('does not resume when flag was not set', async () => {
+      const audioEl = { play: vi.fn() };
+      const state = createAudioState();
+      state.audioEl = audioEl;
+
+      await resumeAudioForPageVisible(state);
+
+      expect(audioEl.play).not.toHaveBeenCalled();
+    });
+
+    it('stopAudio clears resume flag', () => {
+      const state = createAudioState();
+      state._resumePlaybackWhenVisible = true;
+      state.audioEl = { pause: vi.fn() };
+      stopAudio(state);
+      expect(state._resumePlaybackWhenVisible).toBe(false);
+    });
+  });
+
+  describe('setupAudioVisibilityHandling', () => {
+    it('pauses on hide and resumes on show', async () => {
+      const audioEl = { paused: false, pause: vi.fn(), play: vi.fn().mockResolvedValue(undefined) };
+      const stream = { stop: vi.fn(), start: vi.fn() };
+      const state = createAudioState();
+      state.audioEl = audioEl;
+      state.stream = stream;
+      state.fft = { context: { state: 'running', resume: vi.fn() } };
+      const onChange = vi.fn();
+
+      Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+      const teardown = setupAudioVisibilityHandling(state, onChange);
+
+      Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+      expect(audioEl.pause).toHaveBeenCalled();
+      expect(stream.stop).toHaveBeenCalled();
+      expect(state._resumePlaybackWhenVisible).toBe(true);
+      expect(onChange).toHaveBeenCalledTimes(1);
+
+      Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+      document.dispatchEvent(new Event('visibilitychange'));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(audioEl.play).toHaveBeenCalled();
+      expect(stream.start).toHaveBeenCalled();
+      expect(onChange).toHaveBeenCalledTimes(2);
+
+      teardown();
     });
   });
 

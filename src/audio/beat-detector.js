@@ -223,7 +223,6 @@ export default class BeatDetector {
   setupGUI(gui) {
     const folder = gui.addFolder("Beat Detection");
     folder.add(this, "sensitivity", 0.1, 3.0, 0.1);
-    folder.open();
     return folder;
   }
 }

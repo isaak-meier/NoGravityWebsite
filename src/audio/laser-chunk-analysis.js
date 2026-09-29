@@ -4,25 +4,38 @@
  */
 
 /**
+ * Channel-average to mono from raw channel arrays (no AudioBuffer). Lets the Web Worker mix
+ * transferred channel data without access to the Web Audio API.
+ * @param {ArrayLike<number>[]} channels - one Float32Array-like per channel
+ * @param {number} length - samples per channel
+ * @returns {Float32Array} length === `length`, channel average
+ */
+export function mixChannelDataToMono(channels, length) {
+  const ch = channels.length;
+  const out = new Float32Array(length);
+  if (ch === 0) return out;
+  if (ch === 1) {
+    out.set(channels[0]);
+    return out;
+  }
+  for (let c = 0; c < ch; c++) {
+    const data = channels[c];
+    for (let i = 0; i < length; i++) out[i] += data[i];
+  }
+  const inv = 1 / ch;
+  for (let i = 0; i < length; i++) out[i] *= inv;
+  return out;
+}
+
+/**
  * @param {AudioBuffer} buffer
  * @returns {Float32Array} length === buffer.length, channel average
  */
 export function mixAudioBufferToMono(buffer) {
-  const n = buffer.length;
   const ch = buffer.numberOfChannels;
-  const out = new Float32Array(n);
-  if (ch === 0) return out;
-  if (ch === 1) {
-    out.set(buffer.getChannelData(0));
-    return out;
-  }
-  for (let c = 0; c < ch; c++) {
-    const data = buffer.getChannelData(c);
-    for (let i = 0; i < n; i++) out[i] += data[i];
-  }
-  const inv = 1 / ch;
-  for (let i = 0; i < n; i++) out[i] *= inv;
-  return out;
+  const channels = [];
+  for (let c = 0; c < ch; c++) channels.push(buffer.getChannelData(c));
+  return mixChannelDataToMono(channels, buffer.length);
 }
 
 /**
