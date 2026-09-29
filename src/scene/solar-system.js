@@ -975,6 +975,11 @@ class SolarSystem {
     }
   }
 
+  /** True while shard-flight battle holds the blue hub still (spin + music pulse). */
+  get primaryHubSpinPaused() {
+    return this._primaryHubSpinPaused;
+  }
+
   get primary() {
     return this.planets[0];
   }
