@@ -35,6 +35,7 @@ import {
 } from "./planet-pulse.js";
 import { attachPlanetInteriorGoop } from "./planet-goop-material.js";
 import { mountScreenDials } from "../ui/screen-dials.js";
+import { showCockpitToast } from "../ui/cockpit-toast.js";
 import { createPlanetMailingPanel } from "../ui/planet-mailing-panel.js";
 import { createPlanetSongPromoPanel } from "../ui/planet-song-promo-panel.js";
 import { createAuthClient } from "../auth/auth-client.js";
@@ -596,6 +597,45 @@ function animateLoop(scene, camera, composer, planets, starField, state, worlds)
 
 // --- Audio state management ------------------------------------------------
 
+/** One context for all file/mic loads — avoids per-track contexts and autoplay resume issues. */
+let sharedAudioContext = null;
+
+function getSharedAudioContext() {
+  if (!sharedAudioContext && typeof window !== "undefined") {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (Ctx) sharedAudioContext = new Ctx();
+  }
+  return sharedAudioContext;
+}
+
+/**
+ * @param {HTMLMediaElement} el
+ * @returns {Promise<void>}
+ */
+function waitForAudioCanPlay(el) {
+  if (el.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const onReady = () => {
+      cleanup();
+      resolve();
+    };
+    const onErr = () => {
+      cleanup();
+      reject(new Error("audio element failed to load"));
+    };
+    const cleanup = () => {
+      el.removeEventListener("canplaythrough", onReady);
+      el.removeEventListener("loadedmetadata", onReady);
+      el.removeEventListener("error", onErr);
+    };
+    el.addEventListener("canplaythrough", onReady);
+    el.addEventListener("loadedmetadata", onReady);
+    el.addEventListener("error", onErr);
+  });
+}
+
 function createAudioState() {
   return {
     stream: null,
@@ -617,8 +657,13 @@ function stopAudio(audioState) {
   }
   if (audioState.audioEl) {
     try { audioState.audioEl.pause(); } catch (_) {}
+    const src = audioState.audioEl.currentSrc || audioState.audioEl.src;
+    if (typeof src === "string" && src.startsWith("blob:")) {
+      URL.revokeObjectURL(src);
+    }
     audioState.audioEl = null;
   }
+  audioState.fft = null;
   if (audioState._liveStream) {
     for (const track of audioState._liveStream.getTracks()) track.stop();
     audioState._liveStream = null;
@@ -655,14 +700,19 @@ async function loadAudioSource(source, audioState, onSpectrum, onNewSource, beat
   stopAudio(audioState);
   const url = source instanceof Blob ? URL.createObjectURL(source) : source;
   audioState.audioEl = createAudioElement(url);
-  const fft = new AudioFFT({ audioElement: audioState.audioEl, context: null });
-  try { await fft.load(); } catch (err) { console.warn("AudioFFT.load() failed:", err); }
+  await waitForAudioCanPlay(audioState.audioEl);
+  const fft = new AudioFFT({
+    audioElement: audioState.audioEl,
+    context: getSharedAudioContext(),
+  });
+  await fft.load();
   audioState.fft = fft;
   if (beatDetector && fft.analyser) beatDetector.setAnalyser(fft.analyser);
   if (onNewSource) onNewSource();
   const stream = fft.createStream();
   stream.onData(onSpectrum);
   audioState.stream = stream;
+  stream.start();
 }
 
 // --- Planet click-to-play/pause -------------------------------------------
@@ -688,7 +738,7 @@ async function startLiveAudio(mode, audioState, onSpectrum, onNewSource, beatDet
   audioState._liveStream = mediaStream;
   audioState.audioEl = null;
 
-  const fft = new AudioFFT({ context: null });
+  const fft = new AudioFFT({ context: getSharedAudioContext() });
   fft.loadMediaStream(mediaStream);
   audioState.fft = fft;
   if (beatDetector && fft.analyser) beatDetector.setAnalyser(fft.analyser);
@@ -741,9 +791,15 @@ function createSongPickerDOM(isMobile) {
   micBtn.title = "Use microphone as live audio input";
   micBtn.style.cssText = btnStyle;
 
+  const driveBtn = document.createElement("button");
+  driveBtn.textContent = "Drive";
+  driveBtn.title = "Connect a Google Drive folder with audio files";
+  driveBtn.style.cssText = btnStyle;
+
   wrapper.appendChild(driveFilesList);
+  wrapper.appendChild(driveBtn);
   wrapper.appendChild(micBtn);
-  return { wrapper, driveFilesList, micBtn, btnStyle, activeBtnStyle };
+  return { wrapper, driveFilesList, driveBtn, micBtn, btnStyle, activeBtnStyle };
 }
 
 // --- Google Drive song picker ---------------------------------------------
@@ -796,20 +852,21 @@ function setupSongPicker(parentEl, audioState, onSpectrum, onNewSource, isMobile
       await loadAudioSource(blob, audioState, onSpectrum, onNewSource, beatDetector);
       setMusicLoadPhase("ready");
       try {
-        // Resume AudioContext (browsers suspend it until user gesture)
-        if (audioState.fft && audioState.fft.context && audioState.fft.context.state === "suspended") {
+        if (audioState.fft?.context?.state === "suspended") {
           await audioState.fft.context.resume();
         }
         await audioState.audioEl.play();
-        if (audioState.stream) audioState.stream.start();
       } catch (err) {
         console.warn("Auto-play failed:", err);
+        showCockpitToast("Tap Music to start playback");
       }
     } catch (err) {
       console.error("Error loading audio:", err);
       setMusicLoadPhase("error", {
         offline: typeof navigator !== "undefined" && !navigator.onLine,
       });
+    } finally {
+      notifyMusicUi?.();
     }
   }
 
@@ -850,6 +907,37 @@ function setupSongPicker(parentEl, audioState, onSpectrum, onNewSource, isMobile
     (typeof window !== "undefined" ? window.__GOOGLE_DRIVE_FOLDER_ID__ : null);
   const presetApiKey = appConfig.googleDrive.apiKey ||
     (typeof window !== "undefined" ? window.__GOOGLE_API_KEY__ : null);
+
+  if (!presetFolderId) {
+    showCockpitToast("No music folder configured — click Drive below to connect");
+  }
+
+  if (!presetFolderId) {
+    dom.driveBtn.addEventListener("click", async () => {
+      setMusicLoadPhase("loading");
+      try {
+        await requestGoogleAuth();
+        const folder = await showGoogleDrivePicker();
+        if (!folder?.id) {
+          setMusicLoadPhase("idle");
+          return;
+        }
+        audioState._musicDriveConfigured = true;
+        await connectDrive(
+          new GoogleDriveAudioProvider({ folderId: folder.id, accessToken: getAccessToken() }),
+          isEnabled("AUTOPLAY_FIRST_DRIVE_TRACK_ON_LOAD"),
+        );
+      } catch (err) {
+        console.warn("Drive connect failed:", err);
+        setMusicLoadPhase("error", {
+          offline: typeof navigator !== "undefined" && !navigator.onLine,
+        });
+      }
+    });
+  } else {
+    dom.driveBtn.hidden = true;
+  }
+
   if (presetFolderId) {
     audioState._musicDriveConfigured = true;
     notifyMusicUi?.();
@@ -922,6 +1010,7 @@ function initScene() {
   const comet = new Comet();
   scene.add(comet.group);
   if (gui) {
+    solarSystem.setupRedPlanetHalvesGUI(gui);
     comet.setupGUI(gui);
     radiusCtrl = setupPlanetFolder(gui, material, planetParams, sphere, baseRadius);
   }
@@ -1002,6 +1091,11 @@ function initScene() {
   };
   let syncMusicUi = () => {};
   const onSpectrum = (spectrum) => {
+    const fileMusicPlaying =
+      !audioState._liveStream &&
+      audioState.audioEl &&
+      !audioState.audioEl.paused;
+
     if (audioState._liveStream) {
       pyramidField.setKeyframes(null);
       pyramidField.applySpectrum(spectrum);
@@ -1018,6 +1112,9 @@ function initScene() {
             pyramidField.setKeyframes(snapshotState.snapshots, duration);
           }
         }
+      }
+      if (fileMusicPlaying) {
+        pyramidField.applySpectrum(spectrum);
       }
     }
     const loudness = spectrum.reduce((a, v) => a + v, 0) / spectrum.length;

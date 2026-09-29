@@ -125,7 +125,7 @@ describe('CameraController', () => {
       expect(ctrl.zoomActive).toBe(false);
       const center = new THREE.Vector3();
       mesh.getWorldPosition(center);
-      expect(cam.position.distanceTo(center)).toBeCloseTo(15, 0);
+      expect(cam.position.distanceTo(center)).toBeCloseTo(3.5, 0);
     });
 
     it('animateEnterPlanet eases camera inside and keeps planet follow', () => {

@@ -923,6 +923,7 @@ class SolarSystem {
     /** `null` = follow music analysis; `'on'` / `'off'` = user override (see {@link #setGraphLaserManualOverride}). */
     this._graphLaserManualOverride = null;
     this._redPlanetHalves = new PlanetHalvesEffect(this.planets[RED_PLANET_INDEX]);
+    this._redPlanetHalves.enableMusicReactive();
   }
 
   get primary() {
@@ -937,6 +938,14 @@ class SolarSystem {
   /** Split the red planet in half; halves bounce apart and reunite. */
   triggerRedPlanetShatter() {
     this._redPlanetHalves?.trigger();
+  }
+
+  /**
+   * lil-gui folder for music-reactive half separation tuning — register first for top placement.
+   * @param {{ addFolder: Function }} gui
+   */
+  setupRedPlanetHalvesGUI(gui) {
+    this._redPlanetHalves?.setupGUI(gui);
   }
 
   /**
@@ -1079,6 +1088,7 @@ class SolarSystem {
    */
   setLoudness(loudness) {
     this._targetBrightness = 0.32 + loudness * this._spectrumResponse;
+    this._redPlanetHalves?.setSeparationDrive(loudness);
   }
 
   /**

@@ -835,13 +835,30 @@ describe('three-scene helpers', () => {
   describe('createAudioState', () => {
     it('returns object with null stream, fft, audioEl, and _liveStream', () => {
       const s = createAudioState();
-      expect(s).toEqual({ stream: null, fft: null, audioEl: null, _liveStream: null });
+      expect(s).toEqual({
+        stream: null,
+        fft: null,
+        audioEl: null,
+        _liveStream: null,
+        _musicLoadPhase: 'idle',
+        _musicLoadOffline: false,
+        _musicDriveConfigured: false,
+        _musicLoadEmptyFolder: false,
+      });
     });
 
     it('returns a fresh object each call', () => {
       const a = createAudioState();
       const b = createAudioState();
       expect(a).not.toBe(b);
+    });
+
+    it('initializes music-load flags to idle defaults', () => {
+      const s = createAudioState();
+      expect(s._musicLoadPhase).toBe('idle');
+      expect(s._musicLoadOffline).toBe(false);
+      expect(s._musicDriveConfigured).toBe(false);
+      expect(s._musicLoadEmptyFolder).toBe(false);
     });
   });
 
@@ -960,22 +977,29 @@ describe('three-scene helpers', () => {
   // ── createSongPickerDOM ─────────────────────────────────────────────
 
   describe('createSongPickerDOM', () => {
-    it('returns wrapper with driveFilesList and micBtn', () => {
+    it('returns wrapper with driveFilesList, driveBtn, and micBtn', () => {
       const dom = createSongPickerDOM();
       expect(dom.wrapper).toBeInstanceOf(HTMLElement);
       expect(dom.driveFilesList).toBeInstanceOf(HTMLSelectElement);
+      expect(dom.driveBtn).toBeInstanceOf(HTMLButtonElement);
       expect(dom.micBtn).toBeInstanceOf(HTMLButtonElement);
     });
 
-    it('wrapper contains driveFilesList and micBtn', () => {
+    it('wrapper contains driveFilesList, driveBtn, and micBtn', () => {
       const dom = createSongPickerDOM();
       expect(dom.wrapper.contains(dom.driveFilesList)).toBe(true);
+      expect(dom.wrapper.contains(dom.driveBtn)).toBe(true);
       expect(dom.wrapper.contains(dom.micBtn)).toBe(true);
     });
 
     it('drive files dropdown is initially hidden', () => {
       const dom = createSongPickerDOM();
       expect(dom.driveFilesList.style.display).toBe('none');
+    });
+
+    it('drive button defaults to "Drive"', () => {
+      const dom = createSongPickerDOM();
+      expect(dom.driveBtn.textContent).toBe('Drive');
     });
 
     it('mic button defaults to "Mic"', () => {

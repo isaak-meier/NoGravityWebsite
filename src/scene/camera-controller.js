@@ -107,7 +107,7 @@ function easeOutCubic(t) {
 /** World units: camera–planet center distance at load; animates down to {@link INTRO_ORBIT_TO_DIST}. */
 const INTRO_ORBIT_FROM_DIST = 3000;
 /** Target distance from planet center when the intro lerp finishes (HUD “camera distance”). */
-const INTRO_ORBIT_TO_DIST = 15;
+const INTRO_ORBIT_TO_DIST = 3.5;
 const INTRO_ORBIT_DURATION_SEC = 5;
 
 function isUiTouchTarget(el) {

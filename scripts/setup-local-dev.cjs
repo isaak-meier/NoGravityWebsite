@@ -25,4 +25,6 @@ function copyIfMissing(relSrc, relDest) {
 
 copyIfMissing("src/config/app-config.local.json.example", "src/config/app-config.local.json");
 copyIfMissing("server/.env.example", "server/.env");
+copyIfMissing(".env.local.example", ".env.local");
 console.log("[setup:local] done. Next: npm install (repo root + server), then npm run dev:all");
+console.log("[setup:local] For music: paste Drive secrets into .env.local, then npm run setup:drive");

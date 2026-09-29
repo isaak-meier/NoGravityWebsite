@@ -206,4 +206,41 @@ describe("getMusicStatusMessage", () => {
     expect(getMusicStatusMessage({})).toMatch(/unavailable/i);
     expect(getMusicStatusMessage({ _musicDriveConfigured: true })).toMatch(/select a track/i);
   });
+
+  it("hides status when a track is loaded even if phase is still loading", () => {
+    expect(
+      getMusicStatusMessage({ audioEl: {}, _musicLoadPhase: "loading" }),
+    ).toBeNull();
+  });
+
+  it("prefers live mic over loading and error phases", () => {
+    expect(
+      getMusicStatusMessage({
+        _liveStream: {},
+        _musicLoadPhase: "loading",
+        _musicLoadOffline: true,
+      }),
+    ).toMatch(/live mic/i);
+  });
+
+  it("returns empty-folder message before generic offline fallback", () => {
+    expect(getMusicStatusMessage({ _musicLoadEmptyFolder: true })).toMatch(/no audio files/i);
+  });
+
+  it("returns offline message when navigator is offline and no track loaded", () => {
+    const prev = navigator.onLine;
+    Object.defineProperty(navigator, "onLine", { configurable: true, value: false });
+    expect(getMusicStatusMessage({})).toMatch(/offline/i);
+    Object.defineProperty(navigator, "onLine", { configurable: true, value: prev });
+  });
+
+  it("returns error offline copy when load failed while offline", () => {
+    expect(
+      getMusicStatusMessage({ _musicLoadPhase: "error", _musicLoadOffline: true }),
+    ).toMatch(/offline/i);
+  });
+
+  it("treats missing phase as idle", () => {
+    expect(getMusicStatusMessage({ _musicLoadPhase: undefined })).toMatch(/unavailable/i);
+  });
 });

@@ -97,6 +97,10 @@ export function getMusicStatusMessage(audioState) {
   }
 
   const phase = audioState._musicLoadPhase || "idle";
+  if (audioState.audioEl && phase !== "error") {
+    return null;
+  }
+
   if (phase === "loading") return "Loading track\u2026";
   if (phase === "error") {
     return audioState._musicLoadOffline

@@ -1,9 +1,10 @@
 /** @vitest-environment jsdom */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as THREE from "three";
 import {
   PlanetHalvesEffect,
   planetShatterSeparationFactor,
+  loudnessToPlanetHalfSeparation,
   createSphereHalvesGeometries,
   splitSphereGeometryAtEquator,
   createPlanetHalfInteriorMaterial,
@@ -11,6 +12,7 @@ import {
   PLANET_HALF_SHELL_GROUP,
   PLANET_SHATTER_BURST_END,
   PLANET_SHATTER_HOLD_END,
+  PLANET_HALF_AUDIO_SEP_MAX,
 } from "./planet-shatter.js";
 
 describe("planetShatterSeparationFactor", () => {
@@ -24,10 +26,49 @@ describe("planetShatterSeparationFactor", () => {
     expect(planetShatterSeparationFactor(midHold)).toBe(1);
   });
 
-  it("overshoots slightly during burst (bounce-apart)", () => {
-    const earlyBurst = PLANET_SHATTER_BURST_END * 0.85;
-    const linear = earlyBurst / PLANET_SHATTER_BURST_END;
-    expect(planetShatterSeparationFactor(earlyBurst)).toBeGreaterThan(linear * 0.95);
+  it("overshoots during burst (bounce-apart)", () => {
+    let max = 0;
+    for (let i = 0; i < 380; i++) {
+      const t = (i / 380) * PLANET_SHATTER_BURST_END;
+      max = Math.max(max, planetShatterSeparationFactor(t));
+    }
+    expect(max).toBeGreaterThan(1.15);
+  });
+
+  it("clamps negative time to 0 separation", () => {
+    expect(planetShatterSeparationFactor(-0.5)).toBe(0);
+  });
+
+  it("clamps time beyond 1 to reunited state", () => {
+    expect(planetShatterSeparationFactor(2)).toBeCloseTo(0, 5);
+  });
+
+  it("is continuous at burst and hold boundaries", () => {
+    expect(planetShatterSeparationFactor(PLANET_SHATTER_BURST_END)).toBeCloseTo(1, 5);
+    expect(planetShatterSeparationFactor(PLANET_SHATTER_HOLD_END)).toBeCloseTo(1, 5);
+  });
+
+  it("decreases monotonically during reunite phase", () => {
+    const start = PLANET_SHATTER_HOLD_END + 0.01;
+    const mid = (PLANET_SHATTER_HOLD_END + 1) * 0.5;
+    const end = 0.99;
+    const a = planetShatterSeparationFactor(start);
+    const b = planetShatterSeparationFactor(mid);
+    const c = planetShatterSeparationFactor(end);
+    expect(a).toBeGreaterThan(b);
+    expect(b).toBeGreaterThan(c);
+    expect(c).toBeGreaterThan(0);
+  });
+});
+
+describe("loudnessToPlanetHalfSeparation", () => {
+  it("maps silence to 0 and loud input toward the cap", () => {
+    expect(loudnessToPlanetHalfSeparation(0)).toBe(0);
+    expect(loudnessToPlanetHalfSeparation(1)).toBeCloseTo(PLANET_HALF_AUDIO_SEP_MAX, 5);
+  });
+
+  it("scales linearly in the mid range", () => {
+    expect(loudnessToPlanetHalfSeparation(0.5)).toBeGreaterThan(0.8);
   });
 });
 
@@ -81,6 +122,17 @@ describe("splitSphereGeometryAtEquator", () => {
     expect(onEquator).toBeGreaterThan(10);
     positive.dispose();
   });
+
+  it("handles non-indexed geometry", () => {
+    const full = new THREE.SphereGeometry(0.5, 12, 12);
+    full.setIndex(null);
+    const { positive, negative } = splitSphereGeometryAtEquator(full);
+    full.dispose();
+    expect(positive.getAttribute("position").count).toBeGreaterThan(0);
+    expect(negative.getAttribute("position").count).toBeGreaterThan(0);
+    positive.dispose();
+    negative.dispose();
+  });
 });
 
 describe("createPlanetHalfInteriorMaterial", () => {
@@ -90,6 +142,14 @@ describe("createPlanetHalfInteriorMaterial", () => {
     expect(mat.emissive.getHex()).toBe(0xffffff);
     expect(mat.emissiveIntensity).toBeGreaterThan(0);
     mat.dispose();
+  });
+
+  it("returns a fresh material instance each call", () => {
+    const a = createPlanetHalfInteriorMaterial();
+    const b = createPlanetHalfInteriorMaterial();
+    expect(a).not.toBe(b);
+    a.dispose();
+    b.dispose();
   });
 });
 
@@ -101,6 +161,15 @@ describe("createSphereHalvesGeometries", () => {
     expect(upper.getAttribute("normal")).toBeTruthy();
     upper.dispose();
     lower.dispose();
+  });
+
+  it("disposes the temporary full sphere geometry", () => {
+    const spy = vi.spyOn(THREE.BufferGeometry.prototype, "dispose");
+    const [upper, lower] = createSphereHalvesGeometries(0.4, 8, 8);
+    expect(spy).toHaveBeenCalled();
+    upper.dispose();
+    lower.dispose();
+    spy.mockRestore();
   });
 });
 
@@ -157,6 +226,108 @@ describe("PlanetHalvesEffect", () => {
     effect.trigger();
     expect(effect.active).toBe(true);
     expect(effect._elapsed).toBe(0);
+    effect.dispose();
+  });
+
+  it("no-ops trigger when planet mesh is missing", () => {
+    const planet = { mesh: null, pivot, def: { radius: 0.6 } };
+    const effect = new PlanetHalvesEffect(planet);
+    effect.trigger();
+    expect(effect.active).toBe(false);
+    expect(effect._halves).toBeNull();
+    effect.dispose();
+  });
+
+  it("update is a no-op when inactive", () => {
+    const planet = { mesh, pivot, def: { radius: 0.6 } };
+    const effect = new PlanetHalvesEffect(planet);
+    effect.update(1);
+    expect(effect.active).toBe(false);
+    expect(mesh.visible).toBe(true);
+    effect.dispose();
+  });
+
+  it("lazy-builds halves only once across multiple triggers", () => {
+    const planet = { mesh, pivot, def: { radius: 0.6 } };
+    const effect = new PlanetHalvesEffect(planet);
+    effect.trigger();
+    const firstHalves = effect._halves;
+    effect.update(0.5);
+    effect.trigger();
+    expect(effect._halves).toBe(firstHalves);
+    effect.dispose();
+  });
+
+  it("dispose removes group from pivot and frees geometry", () => {
+    const planet = { mesh, pivot, def: { radius: 0.6 } };
+    const effect = new PlanetHalvesEffect(planet);
+    effect.trigger();
+    const group = effect.group;
+    effect.dispose();
+    expect(pivot.children.includes(group)).toBe(false);
+    expect(effect._halves).toBeNull();
+  });
+
+  it("syncs group transform to planet mesh during animation", () => {
+    const planet = { mesh, pivot, def: { radius: 0.6 } };
+    const effect = new PlanetHalvesEffect(planet);
+    mesh.position.set(3, 4, 5);
+    mesh.rotation.y = 0.7;
+    effect.trigger();
+    effect.update(0.01);
+    expect(effect.group.position.x).toBeCloseTo(3);
+    expect(effect.group.position.y).toBeCloseTo(4);
+    expect(effect.group.rotation.y).toBeCloseTo(0.7);
+    effect.dispose();
+  });
+
+  it("in music-reactive mode, FFT loudness drives half separation", () => {
+    const planet = { mesh, pivot, def: { radius: 0.6 } };
+    const effect = new PlanetHalvesEffect(planet);
+    effect.enableMusicReactive();
+    expect(mesh.visible).toBe(false);
+    effect.setSeparationDrive(0.8);
+    for (let i = 0; i < 30; i++) {
+      effect.update(0.016);
+    }
+    const [upper, lower] = effect._halves;
+    expect(upper.position.y).toBeGreaterThan(0.15);
+    expect(lower.position.y).toBeLessThan(-0.15);
+    expect(effect.active).toBe(true);
+    expect(mesh.visible).toBe(false);
+    effect.dispose();
+  });
+
+  it("in music-reactive mode, trigger adds a burst without reuniting", () => {
+    const planet = { mesh, pivot, def: { radius: 0.6 } };
+    const effect = new PlanetHalvesEffect(planet);
+    effect.enableMusicReactive();
+    effect.trigger();
+    for (let i = 0; i < 200; i++) {
+      effect.update(0.016);
+    }
+    expect(effect.active).toBe(true);
+    expect(mesh.visible).toBe(false);
+    effect.dispose();
+  });
+
+  it("setupGUI registers Red Planet Halves tuning sliders", () => {
+    const planet = { mesh, pivot, def: { radius: 0.6 } };
+    const effect = new PlanetHalvesEffect(planet);
+    const folder = {
+      add: vi.fn().mockReturnThis(),
+      name: vi.fn().mockReturnThis(),
+      onChange: vi.fn().mockReturnThis(),
+      open: vi.fn(),
+    };
+    folder.add.mockReturnValue(folder);
+    const gui = { addFolder: vi.fn().mockReturnValue(folder) };
+    effect.setupGUI(gui);
+    expect(gui.addFolder).toHaveBeenCalledWith("Red Planet Halves");
+    expect(folder.add).toHaveBeenCalledTimes(5);
+    effect.guiParams.audioSepGain = 3;
+    effect.setSeparationDrive(0.5);
+    expect(effect._audioSepTarget).toBeCloseTo(1.5, 5);
     effect.dispose();
   });
 });

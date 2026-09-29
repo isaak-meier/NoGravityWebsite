@@ -581,6 +581,15 @@ describe('SolarSystem', () => {
       expect(folder.name).toHaveBeenCalledWith('Planet Spacing');
     });
 
+    it('setupRedPlanetHalvesGUI registers the Red Planet Halves folder', () => {
+      const ss = new SolarSystem(false);
+      const folder = { add: vi.fn().mockReturnThis(), name: vi.fn().mockReturnThis(), onChange: vi.fn().mockReturnThis(), open: vi.fn() };
+      folder.add.mockReturnValue(folder);
+      const gui = { addFolder: vi.fn().mockReturnValue(folder) };
+      ss.setupRedPlanetHalvesGUI(gui);
+      expect(gui.addFolder).toHaveBeenCalledWith('Red Planet Halves');
+    });
+
     it('getGraphCentroid averages all planet positions', () => {
       const ss = new SolarSystem(false);
       const c = ss.getGraphCentroid();
