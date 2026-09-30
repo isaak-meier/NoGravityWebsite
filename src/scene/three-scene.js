@@ -1019,7 +1019,8 @@ function isCameraInsideAnyPlanet(pos, planets) {
 // --- Shard flight mini-game (hidden entry: ?game) --------------------------
 
 /**
- * Builds the shard flight HUD + game and auto-starts it on desktop.
+ * Builds the shard flight HUD + game. The player starts it with the "Shard flight" button
+ * (View panel); it only starts by itself when SHARD_FLIGHT_AUTO_START is on.
  * Only called when the SHARD_FLIGHT_GAME flag is on (URL has `?game`).
  */
 function mountShardFlight({
@@ -1088,7 +1089,7 @@ function mountShardFlight({
     hud: shardFlightHud,
     onHubSpinPausedChange: (paused) => solarSystem.setPrimaryHubSpinPaused(paused),
   });
-  tryStartShardFlight();
+  if (isEnabled("SHARD_FLIGHT_AUTO_START")) tryStartShardFlight();
   return { shardFlight, shardFlightHud };
 }
 
