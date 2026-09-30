@@ -121,4 +121,8 @@ describe('hidden game entry (hasGameUrlParam / SHARD_FLIGHT_GAME)', () => {
     expect(isEnabled('SHARD_FLIGHT_GAME')).toBe(false);
     expect(isEnabled('AUTOPLAY_FIRST_DRIVE_TRACK_ON_LOAD')).toBe(true);
   });
+
+  it('does not auto-start the game, so the Shard flight button is what starts it', () => {
+    expect(isEnabled('SHARD_FLIGHT_AUTO_START')).toBe(false);
+  });
 });
