@@ -35,8 +35,11 @@ const FLAGS = {
    * Off in game mode (`?game`), matching the shard-flight branch; on for the normal site.
    */
   AUTOPLAY_FIRST_DRIVE_TRACK_ON_LOAD: !GAME_URL,
-  /** Shard flight mini-game (HUD + "Shard flight" button in the View panel). Hidden unless `?game`. */
-  SHARD_FLIGHT_GAME: GAME_URL,
+  /**
+   * Shard flight mini-game (HUD + "Shard flight" button in the View panel), for every visitor.
+   * Desktop only: on phones the button shows but is disabled. `?game` now only turns off music autoplay.
+   */
+  SHARD_FLIGHT_GAME: true,
   /**
    * Start shard flight by itself on desktop load. Off: visitors press the "Shard flight" button.
    * (Auto-start skipped past the button, so nobody saw it.)

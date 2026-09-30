@@ -1006,7 +1006,7 @@ function isCameraInsideAnyPlanet(pos, planets) {
 /**
  * Builds the shard flight HUD + game. The player starts it with the "Shard flight" button
  * (View panel); it only starts by itself when SHARD_FLIGHT_AUTO_START is on.
- * Only called when the SHARD_FLIGHT_GAME flag is on (URL has `?game`).
+ * Only called when the SHARD_FLIGHT_GAME flag is on.
  */
 function mountShardFlight({
   container, isMobile, camera, scene, camCtrl, pyramidField, sphere, planetParams, primary, solarSystem,
