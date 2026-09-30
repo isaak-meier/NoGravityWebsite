@@ -130,6 +130,28 @@ describe("AudioFFT", () => {
       expect(analyserConnect).toHaveBeenCalled();
     });
 
+    it("routes source → analyser → gain → destination when gain nodes exist (volume after analyser)", async () => {
+      const calls = [];
+      const gain = { gain: { value: 1 }, connect: vi.fn((n) => calls.push(["gain", n])) };
+      const analyser = { fftSize: 0, smoothingTimeConstant: 0, connect: vi.fn((n) => calls.push(["analyser", n])) };
+      const destination = {};
+      const mockContext = {
+        createAnalyser: vi.fn(() => analyser),
+        createGain: vi.fn(() => gain),
+        createMediaElementSource: vi.fn(() => ({ connect: vi.fn((n) => calls.push(["source", n])) })),
+        destination,
+      };
+      const el = document.createElement("audio");
+      const a = new AudioFFT({ audioElement: el, context: mockContext });
+      await a.load();
+      expect(calls).toEqual([["source", analyser], ["analyser", gain], ["gain", destination]]);
+      a.setVolume(0.25);
+      expect(gain.gain.value).toBe(0.25);
+      a.setVolume(7);
+      expect(gain.gain.value).toBe(1);
+      expect(el.volume).toBe(1); // element volume untouched → analyser keeps full signal
+    });
+
     it("returns this for chaining", async () => {
       const mockContext = {
         createAnalyser: vi.fn(() => ({

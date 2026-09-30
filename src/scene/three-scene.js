@@ -41,6 +41,7 @@ import { createShardFlightHud } from "../ui/shard-flight-hud.js";
 import { createAuthClient } from "../auth/auth-client.js";
 import { createAuthUI } from "../auth/auth-ui.js";
 import { attachMobileControlPanel } from "../ui/mobile-control-panel.js";
+import { mountAudioPlayer } from "../ui/audio-player.js";
 
 function logNxgrxvityBuildStamp() {
   if (typeof console === "undefined" || !console.log) return;
@@ -735,11 +736,21 @@ function createAudioElement(src) {
   return el;
 }
 
+/** Drop the previous track's graph + blob URL so skipping tracks doesn't pile up memory. */
+function releasePreviousTrack(audioState) {
+  const prevSrc = audioState.audioEl?.src;
+  try { audioState.fft?.source?.disconnect(); } catch (_) {}
+  if (prevSrc && prevSrc.startsWith("blob:")) URL.revokeObjectURL(prevSrc);
+}
+
 async function loadAudioSource(source, audioState, onSpectrum, onNewSource, beatDetector) {
+  // Reuse one AudioContext across tracks (browsers limit how many can be open).
+  const context = audioState.fft?.context ?? null;
+  releasePreviousTrack(audioState);
   stopAudio(audioState);
   const url = source instanceof Blob ? URL.createObjectURL(source) : source;
   audioState.audioEl = createAudioElement(url);
-  const fft = new AudioFFT({ audioElement: audioState.audioEl, context: null });
+  const fft = new AudioFFT({ audioElement: audioState.audioEl, context });
   try { await fft.load(); } catch (err) { console.warn("AudioFFT.load() failed:", err); }
   audioState.fft = fft;
   if (beatDetector && fft.analyser) beatDetector.setAnalyser(fft.analyser);
@@ -826,6 +837,7 @@ function setupSongPicker(
   beatDetector,
   notifyMusicUi,
   micUi,
+  playerHooks,
 ) {
   initializeGoogleAuth();
   const dom = createSongPickerDOM(isMobile);
@@ -926,9 +938,12 @@ function setupSongPicker(
       audioState._musicLoadEmptyFolder = false;
       dom.driveFilesList.innerHTML = '<option value="">Select an audio file...</option>';
       files.forEach((f) => dom.driveFilesList.appendChild(new Option(f.name, f.id)));
-      dom.driveFilesList.style.display = "inline-block";
+      // The player bar replaces the raw <select>; keep the select only as a fallback.
+      if (playerHooks) playerHooks.onTracksListed(files);
+      else dom.driveFilesList.style.display = "inline-block";
       if (autoSelectFirst) {
         dom.driveFilesList.value = files[0].id;
+        playerHooks?.onTrackChosen(files[0].id);
         await loadDriveFile(files[0].id);
       } else {
         setMusicLoadPhase("idle");
@@ -969,7 +984,7 @@ function setupSongPicker(
     void connectDrive(provider, isEnabled("AUTOPLAY_FIRST_DRIVE_TRACK_ON_LOAD"));
   }
 
-  return { wrapper: dom.wrapper, onMockOfflineChange };
+  return { wrapper: dom.wrapper, onMockOfflineChange, loadDriveFile };
 }
 
 // --- Planet interior (camera inside) ------------------------------------
@@ -1317,6 +1332,7 @@ function initScene() {
   const onNewAudioSource = () => {
     snapshotState = { snapshots: [], frameCount: 0 };
     pyramidField.resetMusicClock();
+    audioPlayer?.attach(audioState._liveStream ? null : audioState.audioEl);
     syncMusicUi();
     const gen = invalidateGraphLaserChunkState();
     if (!audioState._liveStream && audioState.audioEl) {
@@ -1334,12 +1350,21 @@ function initScene() {
     toggleAudioPlayback,
     solarSystem,
   });
+  /** @type {{ loadDriveFile?: (id: string) => Promise<void> } | null} */
+  let songPicker = null;
+  const audioPlayer = mountAudioPlayer(document.body, {
+    audioState,
+    loadTrack: (id) => songPicker?.loadDriveFile?.(id),
+    toggleAudioPlayback,
+    onPlaybackChange: () => syncMusicUi(),
+  });
   syncMusicUi = () => {
     cockpit.syncMusicToggle();
     cockpit.syncMicToggle();
+    audioPlayer.sync();
   };
   setupAudioVisibilityHandling(audioState, syncMusicUi);
-  const songPicker = setupSongPicker(
+  songPicker = setupSongPicker(
     controlsHost,
     audioState,
     onSpectrum,
@@ -1348,6 +1373,10 @@ function initScene() {
     beatDetector,
     syncMusicUi,
     { micBtn: cockpit.micBtn, syncMicToggle: cockpit.syncMicToggle },
+    {
+      onTracksListed: (files) => audioPlayer.setTracks(files),
+      onTrackChosen: (id) => audioPlayer.markCurrent(id),
+    },
   );
   if (gui) {
     setupMockOfflineGui(gui, () => {

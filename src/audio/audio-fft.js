@@ -67,6 +67,8 @@ export class AudioFFT {
     this.smoothingTimeConstant = smoothingTimeConstant;
     this.analyser = null;
     this.source = null;
+    /** @type {GainNode | null} speaker volume, after the analyser */
+    this.output = null;
     this._bufferSource = null;
   }
 
@@ -107,7 +109,15 @@ export class AudioFFT {
       // Create a MediaElementSource only once
       if (!this.source) this.source = this.context.createMediaElementSource(this.audioElement);
       this.source.connect(this.analyser);
-      this.analyser.connect(this.context.destination);
+      // Volume lives AFTER the analyser (source → analyser → gain → speakers) so the
+      // visuals keep the full signal even when the player volume is low or muted.
+      this.output = typeof this.context.createGain === 'function' ? this.context.createGain() : null;
+      if (this.output) {
+        this.analyser.connect(this.output);
+        this.output.connect(this.context.destination);
+      } else {
+        this.analyser.connect(this.context.destination);
+      }
     } else {
       // no element; user may provide BufferSource via setBufferSource
     }
@@ -148,6 +158,17 @@ export class AudioFFT {
 
   pause() {
     if (this.audioElement) this.audioElement.pause();
+  }
+
+  /**
+   * Speaker volume 0..1 (after the analyser; the FFT data is unaffected).
+   * Falls back to the element volume when there is no gain node.
+   * @param {number} v
+   */
+  setVolume(v) {
+    const vol = Math.max(0, Math.min(1, Number(v) || 0));
+    if (this.output?.gain) this.output.gain.value = vol;
+    else if (this.audioElement) this.audioElement.volume = vol;
   }
 
   /**
