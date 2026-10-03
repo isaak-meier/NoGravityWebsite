@@ -45,6 +45,8 @@ const FLAGS = {
    * (Auto-start skipped past the button, so nobody saw it.)
    */
   SHARD_FLIGHT_AUTO_START: false,
+  /** Dev: "Camera distance" readout top-left. Off for visitors; turn on when tuning the camera. */
+  DEV_CAMERA_DISTANCE_HUD: false,
   /** Dev: treat the app as offline (music toast, Drive load errors). Toggle in GUI → Dev. */
   MOCK_OFFLINE: false,
 };

@@ -60,7 +60,7 @@ const BATTLE_ROUTE_PULSE_RATE = 3.6;
 /** Seconds between shard-aware route replans — the heavy battle compute, throttled to ~12 Hz. */
 const BATTLE_ROUTE_REPLAN_INTERVAL = 1 / 12;
 /** Draw wireframe spheres for the actual hit colliders (shards, ship, goal) to verify collisions. */
-const BATTLE_COLLISION_DEBUG = true;
+const BATTLE_COLLISION_DEBUG = false;
 /** Yaw rate for A / D (rad/s, world +Y). */
 const SHIP_YAW_RATE = 1.15;
 /** Pitch rate for W / S (rad/s, ship-local right). */

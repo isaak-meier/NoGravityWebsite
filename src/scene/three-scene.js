@@ -1446,6 +1446,7 @@ function initScene() {
   const cameraDistanceHud = document.createElement("div");
   cameraDistanceHud.className = "camera-distance-hud";
   cameraDistanceHud.setAttribute("aria-live", "polite");
+  if (!isEnabled("DEV_CAMERA_DISTANCE_HUD")) cameraDistanceHud.style.display = "none";
   const cameraDistanceLabel = document.createElement("span");
   cameraDistanceLabel.className = "camera-distance-hud__label";
   cameraDistanceLabel.textContent = "Camera distance ";
