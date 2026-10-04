@@ -2261,6 +2261,13 @@ html.has-player-bar .three-container--mobile .bottom-left-hud {
   bottom: calc(12px + env(safe-area-inset-bottom, 0px) + var(--player-bar-h));
 }
 
+/* Battle "Ship size" panel: sit right of the left HUD column, above the bar
+   (it was half under the bar and on top of the Music/Lasers stack). */
+html.has-player-bar .shard-flight-battle-size {
+  left: calc(204px + env(safe-area-inset-left, 0px));
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px) + var(--player-bar-h));
+}
+
 html.has-player-bar .planet-switcher-hud,
 html.has-player-bar #three-container .planet-switcher-hud,
 html.has-player-bar .three-container--mobile .planet-switcher-hud {
