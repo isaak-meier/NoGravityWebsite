@@ -27,9 +27,9 @@ const FLAGS = {
   COMET_DEV_INSPECT_ON_LOAD: false,
   /**
    * Dev: lock camera to the Red planet on load with no 5s intro orbit zoom-in.
-   * Turn off before shipping (Blue at origin remains {@link SolarSystem#primary} for pyramids / HUD).
+   * Off for visitors (Isaak 10/04): the site opens on Blue with the intro orbit zoom.
    */
-  DEV_START_ON_RED_PLANET: true,
+  DEV_START_ON_RED_PLANET: false,
   /**
    * First Google Drive track loads and plays on load when a folder is configured.
    * Off in game mode (`?game`), matching the shard-flight branch; on for the normal site.
