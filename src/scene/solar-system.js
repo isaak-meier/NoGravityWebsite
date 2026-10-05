@@ -956,6 +956,7 @@ class SolarSystem {
     /** `null` = follow music analysis; `'on'` / `'off'` = user override (see {@link #setGraphLaserManualOverride}). */
     this._graphLaserManualOverride = null;
     this._redPlanetHalves = new PlanetHalvesEffect(this.planets[RED_PLANET_INDEX]);
+    this._redPlanetHalves.enableMusicReactive();
     /** Re-opens after a non-beat frame so each onset triggers at most one bounce. */
     this._redPlanetBeatGateOpen = true;
     /** Battle / frozen hub: hold blue mesh Y spin at the captured angle. */
@@ -995,10 +996,20 @@ class SolarSystem {
   }
 
   /**
+   * lil-gui folder for music-reactive half separation tuning.
+   * @param {{ addFolder: Function }} gui
+   */
+  setupRedPlanetHalvesGUI(gui) {
+    this._redPlanetHalves?.setupGUI(gui);
+  }
+
+  /**
    * Beat-reactive bounce: one split animation per detected onset (not every frame `isBeat` stays true).
    * @param {boolean} isBeat
    */
   tryTriggerRedPlanetOnBeat(isBeat) {
+    // Music-reactive halves already follow loudness; a burst per beat would drown that out.
+    if (this._redPlanetHalves?.musicReactive) return;
     if (!isBeat) {
       this._redPlanetBeatGateOpen = true;
       return;
@@ -1205,6 +1216,7 @@ class SolarSystem {
    */
   setLoudness(loudness) {
     this._targetBrightness = 0.32 + loudness * this._spectrumResponse;
+    this._redPlanetHalves?.setSeparationDrive(loudness);
   }
 
   /**

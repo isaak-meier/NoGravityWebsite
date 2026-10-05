@@ -727,6 +727,46 @@ async function toggleAudioPlayback(audioState) {
 
 // --- Audio element + FFT wiring -------------------------------------------
 
+/** One context for all file/mic loads — avoids per-track contexts and autoplay resume issues. */
+let sharedAudioContext = null;
+
+function getSharedAudioContext() {
+  if (!sharedAudioContext && typeof window !== "undefined") {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (Ctx) sharedAudioContext = new Ctx();
+  }
+  return sharedAudioContext;
+}
+
+/**
+ * Resolve once the element can play (or has metadata); reject if it fails to load.
+ * @param {HTMLMediaElement} el
+ * @returns {Promise<void>}
+ */
+function waitForAudioCanPlay(el) {
+  if (el.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      el.removeEventListener("canplaythrough", onReady);
+      el.removeEventListener("loadedmetadata", onReady);
+      el.removeEventListener("error", onErr);
+    };
+    const onReady = () => {
+      cleanup();
+      resolve();
+    };
+    const onErr = () => {
+      cleanup();
+      reject(new Error("audio element failed to load"));
+    };
+    el.addEventListener("canplaythrough", onReady);
+    el.addEventListener("loadedmetadata", onReady);
+    el.addEventListener("error", onErr);
+  });
+}
+
 function createAudioElement(src) {
   const el = document.createElement("audio");
   el.src = src;
@@ -744,12 +784,13 @@ function releasePreviousTrack(audioState) {
 }
 
 async function loadAudioSource(source, audioState, onSpectrum, onNewSource, beatDetector) {
-  // Reuse one AudioContext across tracks (browsers limit how many can be open).
-  const context = audioState.fft?.context ?? null;
+  // Reuse one AudioContext across tracks and the mic (browsers limit how many can be open).
+  const context = getSharedAudioContext() ?? audioState.fft?.context ?? null;
   releasePreviousTrack(audioState);
   stopAudio(audioState);
   const url = source instanceof Blob ? URL.createObjectURL(source) : source;
   audioState.audioEl = createAudioElement(url);
+  await waitForAudioCanPlay(audioState.audioEl);
   const fft = new AudioFFT({ audioElement: audioState.audioEl, context });
   try { await fft.load(); } catch (err) { console.warn("AudioFFT.load() failed:", err); }
   audioState.fft = fft;
@@ -783,7 +824,7 @@ async function startLiveAudio(mode, audioState, onSpectrum, onNewSource, beatDet
   audioState._liveStream = mediaStream;
   audioState.audioEl = null;
 
-  const fft = new AudioFFT({ context: null });
+  const fft = new AudioFFT({ context: getSharedAudioContext() });
   fft.loadMediaStream(mediaStream);
   audioState.fft = fft;
   if (beatDetector && fft.analyser) beatDetector.setAnalyser(fft.analyser);
@@ -1132,6 +1173,7 @@ function initScene() {
   const comet = new Comet();
   scene.add(comet.group);
   if (gui) {
+    solarSystem.setupRedPlanetHalvesGUI(gui);
     comet.setupGUI(gui);
     radiusCtrl = setupPlanetFolder(gui, material, planetParams, sphere, baseRadius);
   }

@@ -704,6 +704,7 @@ describe('SolarSystem', () => {
   describe('tryTriggerRedPlanetOnBeat', () => {
     it('triggers once per beat onset, not on sustained isBeat frames', () => {
       const ss = new SolarSystem(false);
+      ss._redPlanetHalves._musicReactive = false;
       const triggerSpy = vi.spyOn(ss._redPlanetHalves, 'trigger');
       ss.tryTriggerRedPlanetOnBeat(true);
       ss.tryTriggerRedPlanetOnBeat(true);
@@ -711,6 +712,34 @@ describe('SolarSystem', () => {
       ss.tryTriggerRedPlanetOnBeat(false);
       ss.tryTriggerRedPlanetOnBeat(true);
       expect(triggerSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('skips beat bursts while the red halves follow the music', () => {
+      const ss = new SolarSystem(false);
+      expect(ss._redPlanetHalves.musicReactive).toBe(true);
+      const triggerSpy = vi.spyOn(ss._redPlanetHalves, 'trigger');
+      ss.tryTriggerRedPlanetOnBeat(true);
+      expect(triggerSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('red planet halves (music-reactive)', () => {
+    it('setLoudness drives the halves apart', () => {
+      const ss = new SolarSystem(false);
+      ss.setLoudness(0.6);
+      for (let i = 0; i < 30; i++) ss.update(0.016);
+      expect(ss._redPlanetHalves._halves[0].position.y).toBeGreaterThan(0);
+    });
+
+    it('setupRedPlanetHalvesGUI registers the Red Planet Halves folder', () => {
+      const ss = new SolarSystem(false);
+      const folder = { add: vi.fn(), name: vi.fn(), onChange: vi.fn() };
+      folder.add.mockReturnValue(folder);
+      folder.name.mockReturnValue(folder);
+      folder.onChange.mockReturnValue(folder);
+      const gui = { addFolder: vi.fn().mockReturnValue(folder) };
+      ss.setupRedPlanetHalvesGUI(gui);
+      expect(gui.addFolder).toHaveBeenCalledWith('Red Planet Halves');
     });
   });
 

@@ -11,6 +11,17 @@ export const PLANET_SHATTER_SEPARATION_SCALE = 1.25;
 /** Normalized timeline: burst apart [0, BURST_END), brief hold, then reunite. */
 export const PLANET_SHATTER_BURST_END = 0.38;
 export const PLANET_SHATTER_HOLD_END = 0.55;
+/** Back-easing overshoot on burst apart — higher = springier separation. */
+export const PLANET_SHATTER_SPRING_OVERSHOOT = 4.8;
+/** Scales burst overshoot past linear while keeping zero velocity at t=0. */
+export const PLANET_SHATTER_BURST_SPRING_GAIN = 1.2;
+
+/** FFT loudness → separation factor (0 = together, ~1.75 = max bounce on spikes). */
+export const PLANET_HALF_AUDIO_SEP_GAIN = 2.15;
+export const PLANET_HALF_AUDIO_SEP_MAX = 1.75;
+/** Smoothing toward louder (attack) vs quieter (release). */
+export const PLANET_HALF_AUDIO_ATTACK = 0.42;
+export const PLANET_HALF_AUDIO_RELEASE = 0.12;
 
 const PLANE_EPS = 1e-5;
 const CAP_DEDUPE_EPS = 1e-4;
@@ -39,9 +50,10 @@ export function planetHalfSeparationFactorFromLoudness(loudnessSm) {
  */
 export function planetShatterSeparationFactor(t) {
   const u = Math.min(1, Math.max(0, t));
+  if (u <= 0 || u >= 1) return 0;
   if (u < PLANET_SHATTER_BURST_END) {
     const p = u / PLANET_SHATTER_BURST_END;
-    return p * easeOutBack(p);
+    return burstSeparationEase(p);
   }
   if (u < PLANET_SHATTER_HOLD_END) {
     return 1;
@@ -54,10 +66,25 @@ function easeInOutCubic(t) {
   return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
 }
 
+function burstSeparationEase(p) {
+  const back = easeOutBack(p);
+  return p + (back - p) * PLANET_SHATTER_BURST_SPRING_GAIN;
+}
+
 function easeOutBack(t) {
-  const c1 = 1.70158;
+  const c1 = PLANET_SHATTER_SPRING_OVERSHOOT;
   const c3 = c1 + 1;
   return 1 + c3 * (t - 1) ** 3 + c1 * (t - 1) ** 2;
+}
+
+/**
+ * Map normalized FFT loudness to a separation factor for the red planet halves.
+ * @param {number} loudness
+ * @returns {number}
+ */
+export function loudnessToPlanetHalfSeparation(loudness) {
+  const l = Number.isFinite(loudness) ? loudness : 0;
+  return THREE.MathUtils.clamp(l * PLANET_HALF_AUDIO_SEP_GAIN, 0, PLANET_HALF_AUDIO_SEP_MAX);
 }
 
 /**
@@ -295,6 +322,66 @@ export class PlanetHalvesEffect {
     this._loudnessSm = 0;
     /** Stays true after music drives a split until halves reunite. */
     this._musicSplitMode = false;
+    /** Music-reactive mode: halves stay apart and the gap follows FFT loudness. */
+    this._musicReactive = false;
+    this._audioSepTarget = 0;
+    this._audioSepSm = 0;
+    this._burstActive = false;
+    this._burstElapsed = 0;
+    /** Live-tunable music-reactive feel (lil-gui sliders). */
+    this.guiParams = {
+      audioSepGain: PLANET_HALF_AUDIO_SEP_GAIN,
+      audioSepMax: PLANET_HALF_AUDIO_SEP_MAX,
+      audioAttack: PLANET_HALF_AUDIO_ATTACK,
+      audioRelease: PLANET_HALF_AUDIO_RELEASE,
+      separationScale: PLANET_SHATTER_SEPARATION_SCALE,
+    };
+  }
+
+  get musicReactive() {
+    return this._musicReactive;
+  }
+
+  _recomputeMaxSep() {
+    this._maxSep = this.planet.def.radius * this.guiParams.separationScale;
+  }
+
+  /**
+   * @param {{ addFolder: Function }} gui
+   */
+  setupGUI(gui) {
+    const folder = gui.addFolder("Red Planet Halves");
+    const p = this.guiParams;
+    folder.add(p, "audioSepGain", 0.5, 5, 0.05).name("FFT gain");
+    folder.add(p, "audioSepMax", 0.2, 3, 0.05).name("Max separation");
+    folder.add(p, "audioAttack", 0.05, 1, 0.01).name("Attack");
+    folder.add(p, "audioRelease", 0.02, 0.5, 0.01).name("Release");
+    folder
+      .add(p, "separationScale", 0.3, 3, 0.05)
+      .name("Sep scale")
+      .onChange(() => this._recomputeMaxSep());
+    return folder;
+  }
+
+  /** Keep halves visible; separation follows {@link setSeparationDrive}. */
+  enableMusicReactive() {
+    this._musicReactive = true;
+    if (!this._halves) {
+      this._buildHalves();
+    }
+    this.active = true;
+    this.planet.mesh.visible = false;
+    this.group.visible = true;
+  }
+
+  /**
+   * FFT loudness (0..1) — spikes push the halves farther apart.
+   * @param {number} loudness
+   */
+  setSeparationDrive(loudness) {
+    const l = Number.isFinite(loudness) ? loudness : 0;
+    const { audioSepGain, audioSepMax } = this.guiParams;
+    this._audioSepTarget = THREE.MathUtils.clamp(l * audioSepGain, 0, audioSepMax);
   }
 
   /** @param {number} loudness01 — smoothed 0..1 music loudness drive */
@@ -308,10 +395,15 @@ export class PlanetHalvesEffect {
       this._buildHalves();
     }
     this.active = true;
-    this._elapsed = 0;
-    this._quietElapsed = 0;
     this.planet.mesh.visible = false;
     this.group.visible = true;
+    if (this._musicReactive) {
+      this._burstActive = true;
+      this._burstElapsed = 0;
+      return;
+    }
+    this._elapsed = 0;
+    this._quietElapsed = 0;
   }
 
   update(dt) {
@@ -320,6 +412,10 @@ export class PlanetHalvesEffect {
     if (!this.active || !this._halves) return;
 
     this._syncGroupToPlanet();
+    if (this._musicReactive) {
+      this._applySeparation(this._updateMusicReactiveFactor(step));
+      return;
+    }
     this._elapsed += step;
 
     if (
@@ -356,6 +452,22 @@ export class PlanetHalvesEffect {
     }
 
     this._applySeparation(sepFactor);
+  }
+
+  /** @returns {number} separation factor for this frame (music-reactive mode) */
+  _updateMusicReactiveFactor(dt) {
+    const { audioAttack, audioRelease } = this.guiParams;
+    const alpha = this._audioSepTarget > this._audioSepSm ? audioAttack : audioRelease;
+    this._audioSepSm += (this._audioSepTarget - this._audioSepSm) * alpha;
+
+    let factor = this._audioSepSm;
+    if (this._burstActive) {
+      this._burstElapsed += dt;
+      const t = Math.min(1, this._burstElapsed / PLANET_SHATTER_DURATION_SEC);
+      factor = Math.max(factor, planetShatterSeparationFactor(t));
+      if (t >= 1) this._burstActive = false;
+    }
+    return factor;
   }
 
   /** @param {number} sepFactor — 0..1+ separation multiplier */
